@@ -1,0 +1,13 @@
+import type { IMAdapter, NormalizedMessage, SendOpts } from "./types.js";
+
+// 预留:本期不实现。接入飞书时在此实现 parseMessage/sendMessage。
+export class FeishuAdapter implements IMAdapter {
+  platform = "feishu" as const;
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  async parseMessage(_rawBody: Buffer, _headers: object): Promise<NormalizedMessage | null> {
+    throw new Error("FeishuAdapter 未实现");
+  }
+  async sendMessage(_opts: SendOpts): Promise<void> {
+    throw new Error("FeishuAdapter 未实现");
+  }
+}

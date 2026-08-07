@@ -1,0 +1,44 @@
+server:
+  port: 3002
+  logLevel: info
+
+redis:
+  url: redis://localhost:6379   # 支持外部 Redis,填远程地址
+
+bots:
+  - id: wecom_1
+    platform: wecom
+    defaultCli: claude
+    projectDir: /home/proj/app
+    timeout: 180                  # CLI 执行超时(秒),可 web/配置改
+    allowedUsers: [zhangsan, lisi] # 每 bot 单独白名单
+    credentials:
+      corpId: "your-corp-id"
+      secret: "your-secret"
+      aesKey: "your-aes-key"
+      token: "your-token"
+    # cliSwitchPrefix: "@"         # 可选,开启后支持 @codex 等切换
+
+  # 以下为预留,本期不实现
+  # - id: dingtalk_1
+  #   platform: dingtalk
+  #   defaultCli: claude
+  #   projectDir: /home/proj/app
+  #   timeout: 180
+  #   allowedUsers: [zhangsan]
+  #   credentials: {}
+  # - id: feishu_1
+  #   platform: feishu
+  #   defaultCli: claude
+  #   projectDir: /home/proj/app
+  #   timeout: 180
+  #   allowedUsers: [zhangsan]
+  #   credentials: {}
+
+clis:
+  claude:
+    path: claude                  # 默认 PATH 查找,可填绝对路径
+  # 以下为预留,本期不实现
+  # codex: { path: codex }
+  # cursor: { path: cursor }
+  # opencode: { path: opencode }
