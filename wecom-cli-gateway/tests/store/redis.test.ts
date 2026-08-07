@@ -10,16 +10,12 @@ class FakeRedis {
   async setnx(key: string, val: string) { if (this.map.has(key)) return 0; this.map.set(key, val); return 1; }
   async del(key: string) { this.map.delete(key); this.ttl.delete(key); }
   async expire(key: string, ttl: number) { this.ttl.set(key, ttl); }
-  // 模拟 Redis SET key val NX EX ttl:键存在返回 null,不存在设置+TTL 返回 "OK"
-  async set(key: string, val: string, opts: { mode: "NX"; ttl: number }): Promise<string | null> {
-    if (opts.mode === "NX") {
-      if (this.map.has(key)) return null;
-      this.map.set(key, val);
-      this.ttl.set(key, opts.ttl);
-      return "OK";
-    }
+  // 模拟 Redis SET key val EX seconds NX:位置参数签名匹配真实 ioredis
+  // NX 语义:键存在返回 null,不存在设置+记 TTL 返回 "OK"
+  async set(key: string, val: string, expiryMode: "EX", seconds: number, setMode: "NX"): Promise<string | null> {
+    if (setMode === "NX" && this.map.has(key)) return null;
     this.map.set(key, val);
-    this.ttl.set(key, opts.ttl);
+    this.ttl.set(key, seconds);
     return "OK";
   }
 }
