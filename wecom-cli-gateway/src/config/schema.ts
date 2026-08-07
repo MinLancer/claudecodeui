@@ -1,0 +1,38 @@
+import { z } from "zod";
+
+export const CliConfigSchema = z.object({
+  path: z.string().default("claude"),
+});
+
+export const BotCredentialsSchema = z.record(z.string(), z.string()).default({});
+
+export const BotConfigSchema = z.object({
+  id: z.string(),
+  platform: z.enum(["wecom", "dingtalk", "feishu"]),
+  defaultCli: z.enum(["claude", "codex", "cursor", "opencode"]).default("claude"),
+  projectDir: z.string(),
+  timeout: z.number().int().positive().default(180),
+  allowedUsers: z.array(z.string()).default([]),
+  credentials: BotCredentialsSchema,
+  cliSwitchPrefix: z.string().optional(),
+});
+
+export const AppConfigSchema = z.object({
+  server: z.object({
+    port: z.number().int().positive().default(3002),
+    logLevel: z.enum(["debug", "info", "warn", "error"]).default("info"),
+  }).default({ port: 3002, logLevel: "info" }),
+  redis: z.object({
+    url: z.string(),
+  }),
+  bots: z.array(BotConfigSchema).min(1),
+  clis: z.object({
+    claude: CliConfigSchema.default({ path: "claude" }),
+    codex: CliConfigSchema.optional(),
+    cursor: CliConfigSchema.optional(),
+    opencode: CliConfigSchema.optional(),
+  }),
+});
+
+export type AppConfig = z.infer<typeof AppConfigSchema>;
+export type BotConfig = z.infer<typeof BotConfigSchema>;
