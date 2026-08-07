@@ -1,4 +1,4 @@
-import type Redis from "ioredis";
+import Redis from "ioredis";
 
 // 锁 TTL(秒),略小于执行超时,防崩溃锁不释放
 const LOCK_TTL = 120;
@@ -50,7 +50,5 @@ export class SessionStore {
 
 // 工厂:从 url 创建真实 ioredis 实例
 export function createRedis(url: string): Redis {
-  // 动态导入避免测试时必须连真实 redis
-  const Ioredis = require("ioredis");
-  return new Ioredis(url);
+  return new Redis(url);
 }
