@@ -11,6 +11,8 @@ export interface RedisLike {
   setnx(key: string, value: string): Promise<number>;
   del(key: string): Promise<number>;
   expire(key: string, ttl: number): Promise<number>;
+  // 原子 SET NX EX:对应 Redis SET key val NX EX ttl,成功返回 "OK",键存在返回 null
+  set(key: string, value: string, opts: { mode: "NX"; ttl: number }): Promise<string | null>;
 }
 
 export class SessionStore {
@@ -26,12 +28,9 @@ export class SessionStore {
   }
 
   async tryAcquireLock(key: string, ttlSec = LOCK_TTL): Promise<boolean> {
-    const ok = await this.redis.setnx(`lock:${key}`, "1");
-    if (ok === 1) {
-      await this.redis.expire(`lock:${key}`, ttlSec);
-      return true;
-    }
-    return false;
+    // 原子操作:SET NX EX,避免 setnx+expire 两步的崩溃窗口
+    const res = await this.redis.set(`lock:${key}`, "1", { mode: "NX", ttl: ttlSec });
+    return res === "OK";
   }
 
   async releaseLock(key: string): Promise<void> {
@@ -39,12 +38,9 @@ export class SessionStore {
   }
 
   async isDuplicate(msgId: string): Promise<boolean> {
-    const ok = await this.redis.setnx(`msgdedup:${msgId}`, "1");
-    if (ok === 1) {
-      await this.redis.expire(`msgdedup:${msgId}`, DEDUP_TTL);
-      return false;
-    }
-    return true;
+    // 原子操作:SET NX EX,成功(首次)返回 false(非重复),键存在返回 true(重复)
+    const res = await this.redis.set(`msgdedup:${msgId}`, "1", { mode: "NX", ttl: DEDUP_TTL });
+    return res === null;
   }
 }
 

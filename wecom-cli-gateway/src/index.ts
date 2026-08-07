@@ -32,7 +32,8 @@ async function main() {
         return {
           write: (d) => p.write(d),
           kill: () => p.kill(),
-          onData: (cb) => p.onData(cb),
+          onData: (cb) => { const d = p.onData(cb); return () => d.dispose(); },
+          onExit: (cb) => { const d = p.onExit((e) => cb(e.exitCode)); return () => d.dispose(); },
         };
       },
     }),
@@ -101,6 +102,7 @@ async function main() {
       if (patch.defaultCli !== undefined) b.defaultCli = patch.defaultCli as CliType;
       // 同步刷新对应 router
       (routers[id] as any).deps.timeoutSec = b.timeout; // 简化:实际应有 setter
+      (routers[id] as any).deps.defaultCli = b.defaultCli;
     },
   });
 

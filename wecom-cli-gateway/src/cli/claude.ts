@@ -7,7 +7,8 @@ export interface PtySpawner {
 export interface Pty {
   write(data: string): void;
   kill(): void;
-  onData(cb: (data: string) => void): void;
+  onData(cb: (data: string) => void): () => void; // 返回 unsubscribe
+  onExit(cb: (code: number | null) => void): () => void;
 }
 
 interface ClaudeStreamLine {
@@ -29,7 +30,7 @@ export class ClaudeAdapter implements CliAdapter {
   }
 
   async start(opts: CliStartOpts): Promise<CliSession> {
-    const args = ["-p", "--output-format", "stream-json", "--verbose"];
+    const args = ["-p", "--output-format", "stream-json", "--input-format", "text"];
     if (opts.sessionId) {
       args.unshift("--resume", opts.sessionId);
     }
@@ -46,35 +47,46 @@ export class ClaudeAdapter implements CliAdapter {
         pty.write(text + "\n");
         // 收集行,逐行解析
         const lines: string[] = [];
-        const waiter = new Promise<void>((resolve) => {
-          pty.onData((data: string) => {
-            buffer.push(data);
-            // 按换行切分
-            let joined = buffer.join("");
-            const idx = joined.lastIndexOf("\n");
-            if (idx >= 0) {
-              const complete = joined.slice(0, idx);
-              joined = joined.slice(idx + 1);
-              buffer.length = 0;
-              buffer.push(joined);
-              for (const line of complete.split("\n")) {
-                if (line.trim()) lines.push(line);
+        let resolved = false;
+        let resolveFn: () => void = () => {};
+        const resolveOnce = () => { if (!resolved) { resolved = true; resolveFn(); } };
+        const waiter = new Promise<void>((r) => { resolveFn = r; });
+
+        // onData:累积行缓冲,收到 result 行即结束等待
+        const offData = pty.onData((data: string) => {
+          buffer.push(data);
+          let joined = buffer.join("");
+          const idx = joined.lastIndexOf("\n");
+          if (idx >= 0) {
+            const complete = joined.slice(0, idx);
+            joined = joined.slice(idx + 1);
+            buffer.length = 0;
+            buffer.push(joined);
+            for (const line of complete.split("\n")) {
+              if (line.trim()) {
+                lines.push(line);
+                try {
+                  const o = JSON.parse(line);
+                  if (o.type === "result") resolveOnce();
+                } catch { /* 非 JSON 行忽略 */ }
               }
             }
-          });
-          // 结束判定:收到 result 类型行视为本次回复完成
-          // 真实场景靠 claude 进程退出或 result 事件;这里用定时检查
-          const timer = setInterval(() => {
-            const last = lines[lines.length - 1];
-            if (last) {
-              try {
-                const o = JSON.parse(last);
-                if (o.type === "result") { clearInterval(timer); resolve(); }
-              } catch { /* 非 JSON 行忽略 */ }
-            }
-          }, 50);
+          }
         });
-        await waiter;
+
+        // onExit:进程退出(崩溃/被 kill/正常退出)时结束等待,避免永久挂起
+        const offExit = pty.onExit((_code: number | null) => {
+          resolveOnce();
+        });
+
+        try {
+          await waiter;
+        } finally {
+          // 清理监听器 + kill 进程(幂等,已死进程无妨)
+          offData();
+          offExit();
+          pty.kill();
+        }
 
         for (const line of lines) {
           let obj: ClaudeStreamLine;

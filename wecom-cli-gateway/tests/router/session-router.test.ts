@@ -112,4 +112,87 @@ describe("SessionRouter", () => {
     // Key 含 codex
     expect(store.sessions.has("wecom_1:p2p:zhangsan:zhangsan:codex")).toBe(true);
   });
+
+  // C2 补测试
+  it("store.isDuplicate 抛错时回服务暂时不可用,不执行 CLI", async () => {
+    const store = fakeStore();
+    store.isDuplicate = async () => { throw new Error("redis down"); };
+    const started = vi.fn();
+    const replies: string[] = [];
+    const router = new SessionRouter({
+      store,
+      getAdapter: () => ({ async start() { started(); return { async *send(){}, kill(){} }; } }),
+      defaultCli: "claude", projectDir: "/tmp/proj", timeoutSec: 180,
+      onReply: async (t) => { replies.push(t); },
+      isAllowed: () => true,
+    });
+    await router.handle(mkMsg());
+    expect(started).not.toHaveBeenCalled();
+    expect(replies.join("")).toContain("服务暂时不可用");
+  });
+
+  it("adapter.start 抛错时回启动失败并释放锁", async () => {
+    const store = fakeStore();
+    let lockReleased = false;
+    store.releaseLock = async () => { lockReleased = true; };
+    const replies: string[] = [];
+    const router = new SessionRouter({
+      store,
+      getAdapter: () => ({ async start() { throw new Error("cli crash"); } }),
+      defaultCli: "claude", projectDir: "/tmp/proj", timeoutSec: 180,
+      onReply: async (t) => { replies.push(t); },
+      isAllowed: () => true,
+    });
+    await router.handle(mkMsg());
+    expect(replies.join("")).toContain("启动失败");
+    expect(lockReleased).toBe(true);
+  });
+
+  // I6 补测试
+  it("群聊隔离:同群不同用户 Key 不同,session 各自独立", async () => {
+    const store = fakeStore();
+    let n = 0;
+    const router = new SessionRouter({
+      store,
+      getAdapter: () => ({
+        async start(o: any) {
+          n++;
+          return { sessionId: o.sessionId ?? `sid-${n}`, async *send(){ yield {type:"final",text:"ok"}; }, kill(){} };
+        },
+      }),
+      defaultCli: "claude", projectDir: "/tmp/proj", timeoutSec: 180,
+      onReply: async () => {},
+      isAllowed: () => true,
+    });
+    // 同群(group:room1)两用户
+    await router.handle(mkMsg({ chatSceneId: "group:room1", userId: "alice", msgId: "m-a" }));
+    await router.handle(mkMsg({ chatSceneId: "group:room1", userId: "bob", msgId: "m-b" }));
+    // Key 不同
+    expect(store.sessions.has("wecom_1:group:room1:alice:claude")).toBe(true);
+    expect(store.sessions.has("wecom_1:group:room1:bob:claude")).toBe(true);
+    // session 各自独立
+    expect(store.sessions.get("wecom_1:group:room1:alice:claude")).not.toBe(
+      store.sessions.get("wecom_1:group:room1:bob:claude")
+    );
+  });
+
+  it("去重:同一 msgId 重复消息不启动 CLI", async () => {
+    const store = fakeStore();
+    let dup = false;
+    store.isDuplicate = async () => dup;
+    const started = vi.fn();
+    const router = new SessionRouter({
+      store,
+      getAdapter: () => ({ async start() { started(); return { sessionId:"s", async *send(){ yield {type:"final",text:"x"}; }, kill(){} }; } }),
+      defaultCli: "claude", projectDir: "/tmp/proj", timeoutSec: 180,
+      onReply: async () => {},
+      isAllowed: () => true,
+    });
+    await router.handle(mkMsg({ msgId: "dup-1" }));
+    expect(started).toHaveBeenCalledTimes(1);
+    // 第二次同一 msgId 视为重复
+    dup = true;
+    await router.handle(mkMsg({ msgId: "dup-1" }));
+    expect(started).toHaveBeenCalledTimes(1);
+  });
 });
