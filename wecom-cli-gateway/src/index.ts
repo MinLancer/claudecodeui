@@ -7,6 +7,7 @@ import { ClaudeAdapter } from "./cli/claude.js";
 import { CodexAdapter } from "./cli/codex.js";
 import { CursorAdapter } from "./cli/cursor.js";
 import { OpencodeAdapter } from "./cli/opencode.js";
+import { realSpawnCli } from "./cli/spawn-cli.js";
 import { SessionRouter } from "./router/session-router.js";
 import { createApp } from "./server/app.js";
 import { registerAdmin } from "./server/admin.js";
@@ -30,6 +31,30 @@ async function loadClaudeQuery(): Promise<QueryFn> {
   return mod.query as QueryFn;
 }
 
+// codex SDK:@openai/codex-sdk。本机未装时降级为抛错的桩(isAvailable 仍 true,调用时报错)。
+// 联调时安装 SDK 或设 CODEX_SDK_PATH。
+async function loadCodexRun(): Promise<any> {
+  const sdkPath = process.env.CODEX_SDK_PATH;
+  try {
+    const target = sdkPath ? pathToFileURL(sdkPath).href : "@openai/codex-sdk";
+    const mod = await import(target);
+    const Codex = mod.Codex ?? mod.default?.Codex;
+    return async function* (params: { prompt: string; cwd: string; resume?: string; signal?: AbortSignal }) {
+      const codex = new Codex();
+      const thread = params.resume
+        ? await codex.thread.resumeThread(params.resume, { workingDirectory: params.cwd })
+        : await codex.thread.startThread({ workingDirectory: params.cwd });
+      const turn = thread.runStreamed(params.prompt, { signal: params.signal });
+      for await (const event of turn.events) yield event;
+    };
+  } catch (e) {
+    // SDK 未装:返回桩,调用时抛清晰错误
+    return async function* () {
+      throw new Error("codex SDK 未加载(@openai/codex-sdk),设 CODEX_SDK_PATH 或 npm install");
+    };
+  }
+}
+
 async function main() {
   const cfg = loadConfig(process.env.CONFIG_PATH ?? "config.yaml");
   const redis = createRedis(cfg.redis.url);
@@ -40,9 +65,9 @@ async function main() {
   const claudeQuery = await loadClaudeQuery();
   const cliAdapters: Record<CliType, CliAdapter> = {
     claude: new ClaudeAdapter({ query: claudeQuery }),
-    codex: new CodexAdapter(),
-    cursor: new CursorAdapter(),
-    opencode: new OpencodeAdapter(),
+    codex: new CodexAdapter({ runCodex: await loadCodexRun() }),
+    cursor: new CursorAdapter({ spawnCli: realSpawnCli }),
+    opencode: new OpencodeAdapter({ spawnCli: realSpawnCli }),
   };
 
   // 为每个 bot 建 router(各自 defaultCli/timeout/白名单)
