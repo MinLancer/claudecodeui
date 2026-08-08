@@ -58,14 +58,14 @@ async function main() {
       cliSwitchPrefix: bot.cliSwitchPrefix,
       isAllowed: (uid) => bot.allowedUsers.includes(uid),
       onReply: async (text, msg) => {
-        // 用 bot 对应的 IM 适配器回发
+        // 用 bot 对应的 IM 适配器回发(智能机器人用回调携带的 response_url)
         const adapter = imAdapters[bot.id];
         for (const part of StreamRelay.split(text)) {
           await adapter.sendMessage({
             toUser: msg.userId,
             toChat: msg.chatSceneId.startsWith("group:") ? msg.chatSceneId.slice(6) : undefined,
             text: part,
-            atUser: msg.chatSceneId.startsWith("group:") ? msg.userId : undefined,
+            responseUrl: msg.responseUrl,
           });
         }
       },
@@ -74,7 +74,7 @@ async function main() {
 
     // 实例化 IM 适配器(本期仅 wecom 完整)
     if (bot.platform === "wecom") {
-      imAdapters[bot.id] = new WeComAdapter(bot.credentials as any, /* crypto 真实实现,联调时注入 */ {} as any, bot.id);
+      imAdapters[bot.id] = new WeComAdapter(bot.credentials as any, bot.id);
     } else if (bot.platform === "dingtalk") {
       imAdapters[bot.id] = new DingtalkAdapter();
     } else if (bot.platform === "feishu") {
@@ -92,6 +92,13 @@ async function main() {
     routerHandle: async (msg) => {
       const router = routers[msg.botId];
       if (router) await router.handle(msg);
+    },
+    verifyUrl: async (query, botId, _platform) => {
+      const adapter = imAdapters[botId];
+      if (adapter && "verifyUrl" in adapter && typeof (adapter as any).verifyUrl === "function") {
+        return (adapter as any).verifyUrl(query);
+      }
+      return null;
     },
   });
 
