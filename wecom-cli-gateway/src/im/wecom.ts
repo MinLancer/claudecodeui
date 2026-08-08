@@ -58,7 +58,19 @@ export class WeComAdapter implements IMAdapter {
     const plain = this.crypto.decrypt(outer.encrypt);
     const m = JSON.parse(plain);
 
-    // 5. 仅处理文本消息(本期);其他类型(图片/语音/文件等)忽略
+    // 5a. 流式刷新回调:msgtype=stream,含 stream.id。归一化为带 streamId 的消息(webhook 据此拉 chunk)
+    if (m.msgtype === "stream" && m.stream?.id) {
+      return {
+        botId: this.botId,
+        msgId: String(m.msgid ?? ""),
+        chatSceneId: "", // 刷新回调无会话上下文,webhook 用 streamId 查 Redis
+        userId: "",
+        text: "",
+        streamId: String(m.stream.id),
+      };
+    }
+
+    // 5b. 用户文本消息(其他类型图片/语音等本期忽略)
     if (m.msgtype !== "text") return null;
 
     const userId = String(m.from?.userid ?? "");
@@ -80,6 +92,27 @@ export class WeComAdapter implements IMAdapter {
       text: text.trim(),
       responseUrl: m.response_url ? String(m.response_url) : undefined,
     };
+  }
+
+  /**
+   * 构造流式被动回复的加密响应体。
+   * 响应格式(文档 101033):{encrypt, msgsignature, timestamp, nonce}
+   * - encrypt: 加密后的 {msgtype:"stream", stream:{id, content, finish}}
+   * - nonce: 必须复用回调请求的 nonce(企微校验)
+   */
+  async buildStreamResponse(streamId: string, content: string, finish: boolean, requestNonce: string): Promise<string> {
+    const inner = {
+      msgtype: "stream" as const,
+      stream: {
+        id: streamId,
+        content,
+        finish,
+      },
+    };
+    const encrypt = this.crypto.encrypt(JSON.stringify(inner));
+    const timestamp = Math.floor(Date.now() / 1000).toString();
+    const msgsignature = this.crypto.sign(timestamp, requestNonce, encrypt);
+    return JSON.stringify({ encrypt, msgsignature, timestamp, nonce: requestNonce });
   }
 
   /**

@@ -2,32 +2,81 @@
 
 ## 前置
 - Node.js 20+
-- Redis(本机或外部)
+- Redis(本机或外部,支持 URL 接入)
 - claude code CLI(已装,PATH 可用)
-- claudecodeui(基座,独立运行,端口 3001)
+- `@anthropic-ai/claude-agent-sdk`(网关依赖,见下 SDK 路径配置)
+- claudecodeui(基座,独立运行,端口 3001,作 web 管理台)
+
+## SDK 路径配置(重要)
+
+ClaudeAdapter 用 `@anthropic-ai/claude-agent-sdk` 的 `query()` 驱动 claude code。SDK 路径通过环境变量注入:
+
+```bash
+# 方式1:指向已装的 SDK 目录(含 sdk.mjs)
+export CLAUDE_AGENT_SDK_PATH="C:/Users/xxx/.codemoss/dependencies/claude-sdk/node_modules/@anthropic-ai/claude-agent-sdk"
+
+# 方式2:在 wecom-cli-gateway 目录 npm install @anthropic-ai/claude-agent-sdk,留空即可(默认 import "@anthropic-ai/claude-agent-sdk")
+```
+
+未配置时默认 `import "@anthropic-ai/claude-agent-sdk"`,需在网关目录装该包。
 
 ## 启动网关
-1. 复制 config.example.yaml 为 config.yaml,填企微凭证与 projectDir、Redis url
+1. 复制 `config.example.yaml` 为 `config.yaml`,填:
+   - `redis.url`(本机或外部 Redis)
+   - bot 的 `credentials`(智能机器人的 `aesKey` + `token`,企微后台「智能机器人」配置页获取)
+   - bot 的 `projectDir`(claude 工作目录)
+   - `allowedUsers`(白名单)
 2. `npm install && npm run build`
-3. `npm start`  (或 `npm run dev` 开发热重载)
+3. 设 `CLAUDE_AGENT_SDK_PATH`(若 SDK 不在本仓库)
+4. `npm start`(或 `npm run dev` 开发热重载)
+
+默认端口 3002。
 
 ## 公网接入(企微回调需公网 URL)
-用 ngrok/frp/nginx 把 `https://你的域名/webhook/wecom/{botId}` 反代到本机 3002。
+
+企微智能机器人回调要求公网可访问的 https URL。用 ngrok/frp/nginx 把 `https://你的域名/webhook/wecom/{botId}` 反代到本机 3002。
 
 nginx 示例:
-    location /webhook/ {
-        proxy_pass http://127.0.0.1:3002;
-        proxy_set_header Host $host;
-    }
+```nginx
+location /webhook/ {
+    proxy_pass http://127.0.0.1:3002;
+    proxy_set_header Host $host;
+}
+```
 
 ## 企微后台配置
-- 回调 URL: https://你的域名/webhook/wecom/wecom_1
-- Token / EncodingAESKey: 与 config.yaml 一致
+
+在企微管理后台「智能机器人」配置页:
+- 接收消息 URL(回调): `https://你的域名/webhook/wecom/wecom_1`
+- Token: 与 config.yaml 的 `credentials.token` 一致
+- EncodingAESKey: 与 config.yaml 的 `credentials.aesKey` 一致
+- 保存时企微发 GET 验证 URL 请求,网关自动解密 echostr 回显
+
+## 流式回复机制
+
+- 用户发消息 -> 网关在回调响应里返回**流式首响应**(stream, content 空, finish=false),并异步启动 claude
+- claude 产出内容实时写 Redis(按 streamId,覆盖式)
+- 企微按 streamId 推**刷新回调**,网关从 Redis 拉最新内容返回(覆盖式展示)
+- claude 完成 -> 刷新回调返回 finish=true
+- 流式超时 **6 分钟**(企微侧),claude 执行超时默认 180s(config 可改),无冲突
+
+## 主动回复(response_url,非流式场景)
+
+回调携带的 `response_url` 用于非用户消息触发的主动回复(如模板卡片事件),POST markdown,1 小时有效仅可用 1 次。日常用户对话走流式被动回复,不用 response_url。
 
 ## 验证
-- 企微私聊机器人发"你好",应收到 claude 回复
-- 群内 @机器人 发消息,机器人 @你 回复
-- 不同人/不同群回复互不串话
+
+- 企微私聊机器人发"你好",应看到 claude 流式回复(内容逐步更新,最后完成)
+- 群内 @机器人 发消息,机器人回复(群内引用触发消息)
+- 不同人/不同群回复互不串话(会话 Key 四维隔离:botId+chatSceneId+userId+cliType)
 
 ## 共享 ~/.claude
-网关与 claudecodeui 跑同一用户,共享 ~/.claude;企微产生的会话可在 claudecodeui web 端只读查看。
+
+网关与 claudecodeui 跑同一用户,共享 `~/.claude`。claude 的会话文件、MCP、skill、权限配置共享:
+- 网关 spawn claude 时复用项目配置的 skill/mcp(需求1"调用配置好的 skill、mcp、cli"自动满足)
+- 企微产生的会话可在 claudecodeui web 端只读查看
+
+## 多 bot / 多 CLI
+
+- config.yaml 可配多个 bot(不同 botId),各自凭证/白名单/projectDir
+- 默认 CLI 为 claude;配 `cliSwitchPrefix: "@"` 后支持 `@codex`/`@cursor`/`@opencode` 前缀切换(需对应适配器实现,本期仅 claude 完整,其余预留)

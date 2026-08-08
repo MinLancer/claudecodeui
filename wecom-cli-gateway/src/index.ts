@@ -8,7 +8,6 @@ import { CodexAdapter } from "./cli/codex.js";
 import { CursorAdapter } from "./cli/cursor.js";
 import { OpencodeAdapter } from "./cli/opencode.js";
 import { SessionRouter } from "./router/session-router.js";
-import { StreamRelay } from "./relay/stream-relay.js";
 import { createApp } from "./server/app.js";
 import { registerAdmin } from "./server/admin.js";
 import { pathToFileURL } from "node:url";
@@ -57,18 +56,6 @@ async function main() {
       timeoutSec: bot.timeout,
       cliSwitchPrefix: bot.cliSwitchPrefix,
       isAllowed: (uid) => bot.allowedUsers.includes(uid),
-      onReply: async (text, msg) => {
-        // 用 bot 对应的 IM 适配器回发(智能机器人用回调携带的 response_url)
-        const adapter = imAdapters[bot.id];
-        for (const part of StreamRelay.split(text)) {
-          await adapter.sendMessage({
-            toUser: msg.userId,
-            toChat: msg.chatSceneId.startsWith("group:") ? msg.chatSceneId.slice(6) : undefined,
-            text: part,
-            responseUrl: msg.responseUrl,
-          });
-        }
-      },
     });
     routers[bot.id] = router;
 
@@ -84,14 +71,26 @@ async function main() {
 
   // webhook 依赖
   const app = createApp({
-    parseMessage: async (body, headers, botId, platform) => {
+    parseMessage: async (body, headers, botId, _platform) => {
       const adapter = imAdapters[botId];
       if (!adapter) return null;
       return adapter.parseMessage(body, headers);
     },
-    routerHandle: async (msg) => {
+    // 用户消息:异步启动 router.handle(streamId 用 msgId,与 webhook 首响应一致)
+    handleUserMessage: async (msg) => {
       const router = routers[msg.botId];
-      if (router) await router.handle(msg);
+      if (router) await router.handle(msg, msg.msgId);
+      return msg.msgId;
+    },
+    // 流式刷新回调:从 Redis 拉 stream 状态
+    getStreamState: async (streamId) => store.getStreamState(streamId),
+    // 构造流式加密响应(由 IMAdapter 提供)
+    buildStreamResponse: async (streamId, content, finish, nonce) => {
+      // 用户消息的 botId 从 streamId 无法反推,但 buildStreamResponse 不需要 botId(只用 crypto)
+      // 取第一个 wecom 适配器(单 bot 场景);多 bot 需按 botId 路由,此处简化
+      const adapter = Object.values(imAdapters)[0];
+      if (!adapter) throw new Error("无 IM 适配器");
+      return adapter.buildStreamResponse(streamId, content, finish, nonce);
     },
     verifyUrl: async (query, botId, _platform) => {
       const adapter = imAdapters[botId];

@@ -141,4 +141,46 @@ describe("WeComAdapter", () => {
     expect(fetchMock.mock.calls[0][0]).toContain("response_code=E2E");
     fetchMock.mockRestore();
   });
+
+  it("流式刷新回调:parseMessage 解析 stream 类型并返回 streamId", async () => {
+    const { body, sig, ts, nonce } = encryptMsg({
+      msgtype: "stream",
+      stream: { id: "stream-xyz" },
+    });
+    const adapter = new WeComAdapter({ aesKey, token }, "wecom_1");
+    const msg = await adapter.parseMessage(body, { msg_signature: sig, timestamp: ts, nonce });
+    expect(msg).not.toBeNull();
+    expect(msg!.streamId).toBe("stream-xyz");
+  });
+
+  it("buildStreamResponse:返回加密的响应体(含 encrypt/msgsignature/timestamp/nonce)", async () => {
+    const adapter = new WeComAdapter({ aesKey, token }, "wecom_1");
+    const resp = await adapter.buildStreamResponse("stream-1", "部分内容", false, "nonce-abc");
+    const obj = JSON.parse(resp);
+    expect(obj.encrypt).toBeTruthy();
+    expect(obj.msgsignature).toBeTruthy();
+    expect(obj.timestamp).toBeTruthy();
+    expect(obj.nonce).toBe("nonce-abc"); // 复用请求 nonce
+
+    // 解密 encrypt 验证内部 stream 结构
+    const crypto = new WeComCrypto({ aesKey, token });
+    const plain = crypto.decrypt(obj.encrypt);
+    const inner = JSON.parse(plain);
+    expect(inner.msgtype).toBe("stream");
+    expect(inner.stream.id).toBe("stream-1");
+    expect(inner.stream.content).toBe("部分内容");
+    expect(inner.stream.finish).toBe(false);
+
+    // 签名校验应通过
+    expect(crypto.verifySign(obj.timestamp, obj.nonce, obj.encrypt, obj.msgsignature)).toBe(true);
+  });
+
+  it("buildStreamResponse finish=true 时 stream.finish 为 true", async () => {
+    const adapter = new WeComAdapter({ aesKey, token }, "wecom_1");
+    const resp = await adapter.buildStreamResponse("stream-2", "完成", true, "n1");
+    const obj = JSON.parse(resp);
+    const crypto = new WeComCrypto({ aesKey, token });
+    const inner = JSON.parse(crypto.decrypt(obj.encrypt));
+    expect(inner.stream.finish).toBe(true);
+  });
 });

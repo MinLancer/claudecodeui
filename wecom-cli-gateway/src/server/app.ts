@@ -3,7 +3,9 @@ import { registerWebhook, type WebhookDeps } from "./webhook.js";
 
 export interface AppDeps {
   parseMessage: (body: Buffer, headers: object, botId: string, platform: string) => Promise<any>;
-  routerHandle: (msg: any) => Promise<void>;
+  handleUserMessage: (msg: any) => Promise<string | null>;
+  getStreamState: (streamId: string) => Promise<{ content: string; finish: boolean } | null>;
+  buildStreamResponse: (streamId: string, content: string, finish: boolean, requestNonce: string) => Promise<string>;
   verifyUrl?: (query: Record<string, string>, botId: string, platform: string) => Promise<string | null>;
 }
 
