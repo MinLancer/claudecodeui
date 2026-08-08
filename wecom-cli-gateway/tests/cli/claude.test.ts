@@ -1,134 +1,74 @@
 import { describe, it, expect } from "vitest";
 import { ClaudeAdapter } from "../../src/cli/claude.js";
 
-// 桩 PTY:模拟 claude 的 stream-json 输出
-// 真实输出:每行一个 JSON,含 type 字段(user/assistant/tool_use/tool_result 等)
-function fakePty(lines: string[]) {
-  let onLine: (line: string) => void = () => {};
-  let onExitCb: (code: number | null) => void = () => {};
-  return {
-    write: (_data: string) => {},
-    kill: () => {},
-    onData: (cb: (line: string) => void) => { onLine = cb; return () => { onLine = () => {}; }; },
-    onExit: (cb: (code: number | null) => void) => { onExitCb = cb; return () => { onExitCb = () => {}; }; },
-    emit: () => lines.forEach((l) => onLine(l + "\n")),
-    emitExit: (code: number | null = 0) => onExitCb(code),
+// SDK query 注入桩:模拟 @anthropic-ai/claude-agent-sdk 的 query() 行为。
+// 真实 SDK:query({prompt, options}) 返回 AsyncIterable<SDKMessage>,消息形态:
+//   {type:"system", subtype:"init", session_id}
+//   {type:"assistant", message:{content:[{type:"text"|"thinking"|"tool_use"|"tool_result", ...}]}}
+//   {type:"result", subtype:"success", result, session_id}
+function fakeQuery(messages: any[]) {
+  return async function* (_params: { prompt: string; options?: any }) {
+    for (const m of messages) yield m;
   };
 }
 
 describe("ClaudeAdapter", () => {
   it("新建会话:send 返回 final 文本,捕获 session_id", async () => {
-    const adapter = new ClaudeAdapter({ path: "claude" }, {
-      spawn: () => {
-        const pty = fakePty([
-          JSON.stringify({ type: "system", session_id: "sid-new" }),
-          JSON.stringify({ type: "assistant", message: { content: [{ type: "text", text: "好的" }] } }),
-          JSON.stringify({ type: "result", result: "好的,已完成" }),
-        ]);
-        // spawn 后立即 emit(模拟 claude 已有输出)
-        setTimeout(() => pty.emit(), 0);
-        return pty as any;
-      },
+    const adapter = new ClaudeAdapter({
+      query: fakeQuery([
+        { type: "system", subtype: "init", session_id: "sid-new" },
+        { type: "assistant", message: { content: [{ type: "text", text: "好的" }] }, session_id: "sid-new" },
+        { type: "result", subtype: "success", result: "好的,已完成", session_id: "sid-new" },
+      ]),
     });
     const session = await adapter.start({ projectDir: "/tmp/proj" });
     const chunks: string[] = [];
     for await (const c of session.send("帮我")) {
       if (c.type === "final") chunks.push(c.text);
     }
-    expect(chunks.join("")).toContain("好的,已完成");
+    expect(chunks).toEqual(["好的,已完成"]); // 不重复
     expect(session.sessionId).toBe("sid-new");
   });
 
-  it("resume 会话:start 携带 sessionId 时命令含 --resume", async () => {
-    let capturedCmd: string[] = [];
-    const adapter = new ClaudeAdapter({ path: "claude" }, {
-      spawn: (cmd: string, args: string[]) => {
-        capturedCmd = [cmd, ...args];
-        const pty = fakePty([JSON.stringify({ type: "result", result: "续" })]);
-        setTimeout(() => pty.emit(), 0);
-        return pty as any;
+  it("resume 会话:start 携带 sessionId 时 query options 含 resume", async () => {
+    let capturedOpts: any;
+    const adapter = new ClaudeAdapter({
+      query: async function* (params) {
+        capturedOpts = params.options;
+        yield { type: "result", subtype: "success", result: "续", session_id: "sid-old" };
       },
     });
     const session = await adapter.start({ projectDir: "/tmp/proj", sessionId: "sid-old" });
     for await (const _ of session.send("继续")) { _; }
-    expect(capturedCmd.join(" ")).toContain("--resume");
-    expect(capturedCmd.join(" ")).toContain("sid-old");
+    expect(capturedOpts.resume).toBe("sid-old");
+    expect(capturedOpts.cwd).toBe("/tmp/proj");
   });
 
-  it("claude 进程退出(无 result 行)时 send 不挂起", async () => {
-    const adapter = new ClaudeAdapter({ path: "claude" }, {
-      spawn: () => {
-        const pty = fakePty([
-          JSON.stringify({ type: "system", session_id: "sid-x" }),
-          JSON.stringify({ type: "assistant", message: { content: [{ type: "text", text: "部分回复" }] } }),
-        ]);
-        // emit 数据(无 result 行),随后触发 onExit 模拟进程退出
-        setTimeout(() => { pty.emit(); setTimeout(() => pty.emitExit(0), 10); }, 0);
-        return pty as any;
-      },
-    });
-    const session = await adapter.start({ projectDir: "/tmp/proj" });
-    const chunks: string[] = [];
-    // 若 send 挂起,for await 不会结束,测试将超时失败
-    for await (const c of session.send("帮我")) {
-      if (c.type === "final") chunks.push(c.text);
-    }
-    expect(chunks.join("")).toContain("部分回复");
-    expect(session.sessionId).toBe("sid-x");
-  });
-
-  it("args 包含 --input-format text 且不含 --verbose", async () => {
-    let capturedArgs: string[] = [];
-    const adapter = new ClaudeAdapter({ path: "claude" }, {
-      spawn: (_cmd: string, args: string[]) => {
-        capturedArgs = args;
-        const pty = fakePty([JSON.stringify({ type: "result", result: "ok" })]);
-        setTimeout(() => pty.emit(), 0);
-        return pty as any;
-      },
-    });
-    const session = await adapter.start({ projectDir: "/tmp/proj" });
-    for await (const _ of session.send("hi")) { _; }
-    expect(capturedArgs.join(" ")).toContain("--input-format text");
-    expect(capturedArgs.join(" ")).not.toContain("--verbose");
-  });
-
-  // 真实 stream-json 格式:assistant text 与 result.result 同文本时不应重复 final
-  it("真实格式:final 不重复(assistant text 与 result.result 同文本)", async () => {
-    const adapter = new ClaudeAdapter({ path: "claude" }, {
-      spawn: () => {
-        const pty = fakePty([
-          JSON.stringify({ type: "system", subtype: "init", session_id: "sid-real", cwd: "/tmp/proj" }),
-          JSON.stringify({ type: "assistant", message: { type: "message", role: "assistant", content: [{ type: "thinking", thinking: "用户要求只回一个字" }] }, session_id: "sid-real" }),
-          JSON.stringify({ type: "assistant", message: { type: "message", role: "assistant", content: [{ type: "text", text: "好" }] }, session_id: "sid-real" }),
-          JSON.stringify({ is_error: false, subtype: "success", result: "好", session_id: "sid-real", type: "result" }),
-        ]);
-        setTimeout(() => pty.emit(), 0);
-        return pty as any;
-      },
+  it("final 不重复(assistant text 与 result.result 同文本)", async () => {
+    const adapter = new ClaudeAdapter({
+      query: fakeQuery([
+        { type: "system", subtype: "init", session_id: "sid-real" },
+        { type: "assistant", message: { content: [{ type: "thinking", thinking: "用户要求只回一个字" }] }, session_id: "sid-real" },
+        { type: "assistant", message: { content: [{ type: "text", text: "好" }] }, session_id: "sid-real" },
+        { type: "result", subtype: "success", result: "好", session_id: "sid-real" },
+      ]),
     });
     const session = await adapter.start({ projectDir: "/tmp/proj" });
     const finals: string[] = [];
     for await (const c of session.send("只回一个字:好")) {
       if (c.type === "final") finals.push(c.text);
     }
-    // 只应有一个 final "好",不重复为 ["好","好"] 或 "好好"
     expect(finals).toEqual(["好"]);
     expect(session.sessionId).toBe("sid-real");
   });
 
-  // 真实格式:工具调用在 assistant message.content 内(type:tool_use/tool_result),非顶层 type
   it("assistant content 中的 tool_use/tool_result 识别为 tool chunk", async () => {
-    const adapter = new ClaudeAdapter({ path: "claude" }, {
-      spawn: () => {
-        const pty = fakePty([
-          JSON.stringify({ type: "assistant", message: { content: [{ type: "tool_use", id: "t1", name: "Bash", input: { command: "ls" } }] } }),
-          JSON.stringify({ type: "assistant", message: { content: [{ type: "tool_result", tool_use_id: "t1", content: "file.txt" }] } }),
-          JSON.stringify({ type: "result", result: "列出完成" }),
-        ]);
-        setTimeout(() => pty.emit(), 0);
-        return pty as any;
-      },
+    const adapter = new ClaudeAdapter({
+      query: fakeQuery([
+        { type: "assistant", message: { content: [{ type: "tool_use", id: "t1", name: "Bash", input: { command: "ls" } }] } },
+        { type: "assistant", message: { content: [{ type: "tool_result", tool_use_id: "t1", content: "file.txt" }] } },
+        { type: "result", subtype: "success", result: "列出完成" },
+      ]),
     });
     const session = await adapter.start({ projectDir: "/tmp/proj" });
     const tools: string[] = [];
@@ -137,5 +77,37 @@ describe("ClaudeAdapter", () => {
     }
     expect(tools.length).toBe(2);
     expect(tools[0]).toContain("Bash");
+  });
+
+  it("thinking 内容识别为 thinking chunk", async () => {
+    const adapter = new ClaudeAdapter({
+      query: fakeQuery([
+        { type: "assistant", message: { content: [{ type: "thinking", thinking: "考虑一下" }] } },
+        { type: "result", subtype: "success", result: "结论" },
+      ]),
+    });
+    const session = await adapter.start({ projectDir: "/tmp/proj" });
+    const thoughts: string[] = [];
+    for await (const c of session.send("想想")) {
+      if (c.type === "thinking") thoughts.push(c.text);
+    }
+    expect(thoughts).toEqual(["考虑一下"]);
+  });
+
+  it("无 result 时 fallback 用 assistant text(避免空回复)", async () => {
+    const adapter = new ClaudeAdapter({
+      query: fakeQuery([
+        { type: "system", subtype: "init", session_id: "sid-x" },
+        { type: "assistant", message: { content: [{ type: "text", text: "部分回复" }] }, session_id: "sid-x" },
+        // 无 result 消息(异常截断)
+      ]),
+    });
+    const session = await adapter.start({ projectDir: "/tmp/proj" });
+    const finals: string[] = [];
+    for await (const c of session.send("帮我")) {
+      if (c.type === "final") finals.push(c.text);
+    }
+    expect(finals).toEqual(["部分回复"]);
+    expect(session.sessionId).toBe("sid-x");
   });
 });

@@ -11,12 +11,25 @@ import { SessionRouter } from "./router/session-router.js";
 import { StreamRelay } from "./relay/stream-relay.js";
 import { createApp } from "./server/app.js";
 import { registerAdmin } from "./server/admin.js";
-import * as pty from "node-pty";
+import { pathToFileURL } from "node:url";
 import type { IMAdapter, NormalizedMessage } from "./im/types.js";
 import type { CliAdapter, CliType } from "./cli/types.js";
+import type { QueryFn } from "./cli/claude.js";
 
 // 企微加解密(生产用 @wecom/crypto,此处按实际 SDK 接入)
 // 接入时安装对应包并在 wecom.ts 的 crypto 注入真实实现
+
+// claude-agent-sdk 路径:优先本仓库 node_modules,否则用环境变量 CLAUDE_AGENT_SDK_PATH 指向。
+// 当前本机 SDK 装在 C:/Users/Administrator/.codemoss/dependencies/claude-sdk 下,
+// 用 CLAUDE_AGENT_SDK_PATH 环境变量注入,或后续 npm install 装到本仓库。
+async function loadClaudeQuery(): Promise<QueryFn> {
+  const sdkPath = process.env.CLAUDE_AGENT_SDK_PATH;
+  const target = sdkPath
+    ? pathToFileURL(sdkPath + "/sdk.mjs").href
+    : "@anthropic-ai/claude-agent-sdk";
+  const mod = await import(target);
+  return mod.query as QueryFn;
+}
 
 async function main() {
   const cfg = loadConfig(process.env.CONFIG_PATH ?? "config.yaml");
@@ -25,18 +38,9 @@ async function main() {
 
   // IM 适配器注册表
   const imAdapters: Record<string, IMAdapter> = {};
+  const claudeQuery = await loadClaudeQuery();
   const cliAdapters: Record<CliType, CliAdapter> = {
-    claude: new ClaudeAdapter({ path: cfg.clis.claude.path }, {
-      spawn: (cmd, args, opts) => {
-        const p = pty.spawn(cmd, args, { cwd: opts.cwd, name: "xterm-color" });
-        return {
-          write: (d) => p.write(d),
-          kill: () => p.kill(),
-          onData: (cb) => { const d = p.onData(cb); return () => d.dispose(); },
-          onExit: (cb) => { const d = p.onExit((e) => cb(e.exitCode)); return () => d.dispose(); },
-        };
-      },
-    }),
+    claude: new ClaudeAdapter({ query: claudeQuery }),
     codex: new CodexAdapter(),
     cursor: new CursorAdapter(),
     opencode: new OpencodeAdapter(),
