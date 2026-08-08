@@ -92,4 +92,50 @@ describe("ClaudeAdapter", () => {
     expect(capturedArgs.join(" ")).toContain("--input-format text");
     expect(capturedArgs.join(" ")).not.toContain("--verbose");
   });
+
+  // 真实 stream-json 格式:assistant text 与 result.result 同文本时不应重复 final
+  it("真实格式:final 不重复(assistant text 与 result.result 同文本)", async () => {
+    const adapter = new ClaudeAdapter({ path: "claude" }, {
+      spawn: () => {
+        const pty = fakePty([
+          JSON.stringify({ type: "system", subtype: "init", session_id: "sid-real", cwd: "/tmp/proj" }),
+          JSON.stringify({ type: "assistant", message: { type: "message", role: "assistant", content: [{ type: "thinking", thinking: "用户要求只回一个字" }] }, session_id: "sid-real" }),
+          JSON.stringify({ type: "assistant", message: { type: "message", role: "assistant", content: [{ type: "text", text: "好" }] }, session_id: "sid-real" }),
+          JSON.stringify({ is_error: false, subtype: "success", result: "好", session_id: "sid-real", type: "result" }),
+        ]);
+        setTimeout(() => pty.emit(), 0);
+        return pty as any;
+      },
+    });
+    const session = await adapter.start({ projectDir: "/tmp/proj" });
+    const finals: string[] = [];
+    for await (const c of session.send("只回一个字:好")) {
+      if (c.type === "final") finals.push(c.text);
+    }
+    // 只应有一个 final "好",不重复为 ["好","好"] 或 "好好"
+    expect(finals).toEqual(["好"]);
+    expect(session.sessionId).toBe("sid-real");
+  });
+
+  // 真实格式:工具调用在 assistant message.content 内(type:tool_use/tool_result),非顶层 type
+  it("assistant content 中的 tool_use/tool_result 识别为 tool chunk", async () => {
+    const adapter = new ClaudeAdapter({ path: "claude" }, {
+      spawn: () => {
+        const pty = fakePty([
+          JSON.stringify({ type: "assistant", message: { content: [{ type: "tool_use", id: "t1", name: "Bash", input: { command: "ls" } }] } }),
+          JSON.stringify({ type: "assistant", message: { content: [{ type: "tool_result", tool_use_id: "t1", content: "file.txt" }] } }),
+          JSON.stringify({ type: "result", result: "列出完成" }),
+        ]);
+        setTimeout(() => pty.emit(), 0);
+        return pty as any;
+      },
+    });
+    const session = await adapter.start({ projectDir: "/tmp/proj" });
+    const tools: string[] = [];
+    for await (const c of session.send("列出文件")) {
+      if (c.type === "tool") tools.push(c.text);
+    }
+    expect(tools.length).toBe(2);
+    expect(tools[0]).toContain("Bash");
+  });
 });

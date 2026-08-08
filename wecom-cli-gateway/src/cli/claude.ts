@@ -16,7 +16,7 @@ interface ClaudeStreamLine {
   session_id?: string;
   result?: string;
   subtype?: string;
-  message?: { content?: Array<{ type: string; text?: string }> };
+  message?: { content?: Array<{ type: string; text?: string; thinking?: string }> };
 }
 
 export class ClaudeAdapter implements CliAdapter {
@@ -88,21 +88,33 @@ export class ClaudeAdapter implements CliAdapter {
           pty.kill();
         }
 
+        // 解析收集到的行:assistant text 暂存(避免与 result.result 重复),
+        // 工具调用从 assistant content 内识别(真实格式 tool_use/tool_result 在 content 里,非顶层 type)
+        let hasResult = false;
+        const assistantTexts: string[] = [];
         for (const line of lines) {
           let obj: ClaudeStreamLine;
           try { obj = JSON.parse(line); } catch { continue; }
           if (obj.type === "system" && obj.session_id) sessionId = obj.session_id;
           if (obj.type === "assistant" && obj.message?.content) {
             for (const c of obj.message.content) {
-              if (c.type === "text" && c.text) yield { type: "final", text: c.text };
+              if (c.type === "thinking" && c.thinking) {
+                yield { type: "thinking", text: c.thinking };
+              } else if (c.type === "text" && c.text) {
+                assistantTexts.push(c.text); // 暂存,不立即 yield final
+              } else if (c.type === "tool_use" || c.type === "tool_result") {
+                yield { type: "tool", text: JSON.stringify(c) };
+              }
             }
           }
-          if (obj.type === "tool_use" || obj.type === "tool_result") {
-            yield { type: "tool", text: JSON.stringify(obj) };
-          }
           if (obj.type === "result" && obj.result) {
+            hasResult = true;
             yield { type: "final", text: obj.result };
           }
+        }
+        // fallback:进程退出但无 result 行(崩溃/异常输出截断)时,用 assistant text 避免空回复
+        if (!hasResult && assistantTexts.length > 0) {
+          yield { type: "final", text: assistantTexts.join("") };
         }
       },
     };
