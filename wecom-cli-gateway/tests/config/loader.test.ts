@@ -65,4 +65,65 @@ clis:
 `);
     expect(() => loadConfig(path)).toThrow();
   });
+
+  it("解析 clis.ccui 配置", () => {
+    const path = join(tmpdir(), `cfg-${Date.now()}.yaml`);
+    writeFileSync(path, `
+server: { port: 3002, logLevel: info }
+redis: { url: "redis://localhost:6379" }
+bots:
+  - id: wecom_1
+    platform: wecom
+    defaultCli: claude
+    projectDir: /tmp/proj
+    credentials: {}
+clis:
+  claude: { path: claude }
+  ccui:
+    baseUrl: http://localhost:3001
+    apiKey: key-abc
+`);
+    const cfg = loadConfig(path);
+    expect(cfg.clis.ccui?.baseUrl).toBe("http://localhost:3001");
+    expect(cfg.clis.ccui?.apiKey).toBe("key-abc");
+    expect(cfg.clis.ccui?.timeoutMs).toBe(600000);
+  });
+
+  it("ccui 缺失时 cfg.clis.ccui 为 undefined", () => {
+    const path = join(tmpdir(), `cfg-${Date.now()}.yaml`);
+    writeFileSync(path, `
+server: { port: 3002, logLevel: info }
+redis: { url: "redis://localhost:6379" }
+bots:
+  - id: wecom_1
+    platform: wecom
+    defaultCli: claude
+    projectDir: /tmp/proj
+    credentials: {}
+clis:
+  claude: { path: claude }
+`);
+    const cfg = loadConfig(path);
+    expect(cfg.clis.ccui).toBeUndefined();
+  });
+
+  it("ccui.baseUrl 非法 URL 时 schema 报错", () => {
+    const path = join(tmpdir(), `cfg-${Date.now()}.yaml`);
+    writeFileSync(path, `
+server: { port: 3002, logLevel: info }
+redis: { url: "redis://localhost:6379" }
+bots:
+  - id: wecom_1
+    platform: wecom
+    defaultCli: claude
+    projectDir: /tmp/proj
+    credentials: {}
+clis:
+  claude: { path: claude }
+  ccui:
+    baseUrl: not-a-url
+    apiKey: k
+`);
+    expect(() => loadConfig(path)).toThrow();
+  });
 });
