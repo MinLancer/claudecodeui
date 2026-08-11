@@ -149,4 +149,27 @@ describe("CcuiAdapter", () => {
   it("defaultFetchSse 是函数(仅类型/存在性,不发真实网络)", () => {
     expect(typeof defaultFetchSse).toBe("function");
   });
+
+  it("kill 在 fetchSse await 期间触发时不 yield 错误 chunk", async () => {
+    // 模拟 reader.read() 挂起直到 abort:await 期间 kill 会触发 AbortError。
+    const session = new CcuiSession({
+      baseUrl: "http://x", apiKey: "k", provider: "claude", projectDir: "/tmp/p",
+      fetchSse: async function* (_url, init) {
+        // 等待 signal abort 后抛 AbortError,模拟真实 fetch reader.read()
+        await new Promise((_resolve, reject) => {
+          init.signal.addEventListener("abort", () => reject(new DOMException("This operation was aborted", "AbortError")));
+        });
+      },
+      timeoutMs: 5000,
+    });
+    const chunks = [];
+    const iterator = session.send("hi");
+    // 启动迭代,但在第一个 await 挂起时 kill
+    const first = iterator.next();
+    await Promise.resolve();
+    session.kill();
+    await first;
+    for await (const c of iterator) chunks.push(c);
+    expect(chunks).toEqual([]); // 不应有 error chunk
+  });
 });

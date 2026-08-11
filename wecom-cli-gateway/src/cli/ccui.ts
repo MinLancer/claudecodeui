@@ -57,6 +57,8 @@ export class CcuiSession implements CliSession {
         if (t) yield { type: "final", text: t };
       }
     } catch (e) {
+      // kill()/超时触发的 AbortError 不是错误内容,静默结束(与旧 ClaudeAdapter 行为一致)
+      if (this.aborted) return;
       yield { type: "error", text: e instanceof Error ? e.message : String(e) };
     } finally {
       clearTimeout(timer);
