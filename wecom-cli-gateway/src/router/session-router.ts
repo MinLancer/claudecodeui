@@ -15,6 +15,9 @@ export interface RouterDeps {
   // 主动回复回调:claude 完成后,若消息携带 responseUrl(企微),用其主动推送最终结果。
   // 用于兜底——企微流式刷新可能因 claude 处理过慢而超时,response_url(1h 有效)保证结果送达。
   sendActiveReply?: (msg: NormalizedMessage, content: string) => Promise<void>;
+  // 安抚触发秒数:claude 处理超过此值仍未完成时,推一条安抚消息"请您稍后..."让企微显示,
+  // 避免用户在企微流式刷新窗口内长时间看不到反馈。默认 180。
+  reassureSec?: number;
 }
 
 export class SessionRouter {
@@ -122,6 +125,13 @@ export class SessionRouter {
           session.kill();
         }, this.deps.timeoutSec * 1000);
 
+        // 安抚:claude 处理超过 reassureSec 仍未完成时,推安抚消息让企微显示"请您稍后"。
+        // 仅推一次;之后若有新进度会覆盖,无新进度时企微刷新显示安抚而非干等。
+        const reassureSec = this.deps.reassureSec ?? 180;
+        const reassureTimer = setTimeout(() => {
+          this.pushStream(streamId, "请您稍后,待我处理完成后会主动通知您。", false);
+        }, reassureSec * 1000);
+
         try {
           await exec;
         } catch {
@@ -130,6 +140,7 @@ export class SessionRouter {
           }
         } finally {
           clearTimeout(timer);
+          clearTimeout(reassureTimer);
           session.kill();
         }
 

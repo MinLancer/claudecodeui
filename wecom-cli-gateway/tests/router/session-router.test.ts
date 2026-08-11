@@ -194,4 +194,31 @@ describe("SessionRouter", () => {
     await router.handle(mkMsg(), "s");
     expect(sendActiveReply).not.toHaveBeenCalled();
   });
+
+  it("claude 处理超过 reassureSec 时推安抚消息'请您稍后'", async () => {
+    const store = fakeStore();
+    let releaseSend: (() => void) | undefined;
+    const router = new SessionRouter({
+      store, getAdapter: () => ({ async start(){ return { sessionId:"s", async *send(){ await new Promise<void>(r => { releaseSend = r; }); }, kill(){} }; } }) as any,
+      defaultCli: "claude", projectDir: "/tmp/proj", timeoutSec: 600, isAllowed: () => true,
+      reassureSec: 1,
+    });
+    const done = router.handle(mkMsg(), "stream-r");
+    // 等待超过 reassureSec(1s),安抚应已推送
+    await new Promise((r) => setTimeout(r, 1500));
+    expect(store.streamChunks.some((c) => c.content.includes("请您稍后"))).toBe(true);
+    releaseSend?.();
+    await done;
+  });
+
+  it("claude 快速完成时不推安抚消息", async () => {
+    const store = fakeStore();
+    const router = new SessionRouter({
+      store, getAdapter: () => ({ async start(){ return { sessionId:"s", async *send(){ yield {type:"final",text:"ok"}; }, kill(){} }; } }) as any,
+      defaultCli: "claude", projectDir: "/tmp/proj", timeoutSec: 600, isAllowed: () => true,
+      reassureSec: 10,
+    });
+    await router.handle(mkMsg(), "s");
+    expect(store.streamChunks.some((c) => c.content.includes("请您稍后"))).toBe(false);
+  });
 });
