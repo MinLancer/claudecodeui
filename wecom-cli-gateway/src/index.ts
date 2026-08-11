@@ -3,10 +3,7 @@ import { createRedis, SessionStore } from "./store/redis.js";
 import { WeComAdapter } from "./im/wecom.js";
 import { DingtalkAdapter } from "./im/dingtalk.js";
 import { FeishuAdapter } from "./im/feishu.js";
-import { ClaudeAdapter } from "./cli/claude.js";
-import { CodexAdapter } from "./cli/codex.js";
-import { CursorAdapter } from "./cli/cursor.js";
-import { OpencodeAdapter } from "./cli/opencode.js";
+import { buildCliAdapters } from "./cli/registry.js";
 import { realSpawnCli } from "./cli/spawn-cli.js";
 import { SessionRouter } from "./router/session-router.js";
 import { createApp } from "./server/app.js";
@@ -63,12 +60,12 @@ async function main() {
   // IM 适配器注册表
   const imAdapters: Record<string, IMAdapter> = {};
   const claudeQuery = await loadClaudeQuery();
-  const cliAdapters: Record<CliType, CliAdapter> = {
-    claude: new ClaudeAdapter({ query: claudeQuery }),
-    codex: new CodexAdapter({ runCodex: await loadCodexRun() }),
-    cursor: new CursorAdapter({ spawnCli: realSpawnCli }),
-    opencode: new OpencodeAdapter({ spawnCli: realSpawnCli }),
-  };
+  // ccui 配置存在时桥接 claudecodeui,否则回退到旧适配器(保留备用)
+  const cliAdapters: Record<CliType, CliAdapter> = buildCliAdapters(cfg, {
+    claudeQuery,
+    codexRun: await loadCodexRun(),
+    spawnCli: realSpawnCli,
+  });
 
   // 为每个 bot 建 router(各自 defaultCli/timeout/白名单)
   const routers: Record<string, SessionRouter> = {};
