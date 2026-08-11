@@ -12,11 +12,11 @@ bots:
     projectDir: /home/proj/app
     timeout: 180                  # CLI 执行超时(秒),可 web/配置改
     allowedUsers: [zhangsan, lisi] # 每 bot 单独白名单
+    # 企微智能机器人凭证(回调加解密用 Token + EncodingAESKey)。
+    # 在企微后台「智能机器人」配置页获取。回复用回调携带的 response_url,无需 corpId/secret。
     credentials:
-      corpId: "your-corp-id"
-      secret: "your-secret"
-      aesKey: "your-aes-key"
-      token: "your-token"
+      aesKey: "your-43-char-encoding-aes-key"  # 43 字符 EncodingAESKey
+      token: "your-token"                        # 回调签名校验 Token
     # cliSwitchPrefix: "@"         # 可选,开启后支持 @codex 等切换
 
   # 以下为预留,本期不实现
@@ -38,7 +38,9 @@ bots:
 clis:
   claude:
     path: claude                  # 默认 PATH 查找,可填绝对路径
-  # 以下为预留,本期不实现
-  # codex: { path: codex }
-  # cursor: { path: cursor }
-  # opencode: { path: opencode }
+  codex:
+    path: codex                   # codex CLI(配合 @openai/codex-sdk,设 CODEX_SDK_PATH)
+  cursor:
+    path: cursor-agent            # cursor CLI(cursor-agent)
+  opencode:
+    path: opencode                # opencode CLI

@@ -10,4 +10,7 @@ export class DingtalkAdapter implements IMAdapter {
   async sendMessage(_opts: SendOpts): Promise<void> {
     throw new Error("DingtalkAdapter 未实现");
   }
+  async buildStreamResponse(_streamId: string, _content: string, _finish: boolean, _requestNonce: string): Promise<string> {
+    throw new Error("DingtalkAdapter 未实现");
+  }
 }

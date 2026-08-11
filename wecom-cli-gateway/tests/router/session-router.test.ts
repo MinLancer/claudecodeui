@@ -3,17 +3,23 @@ import { SessionRouter } from "../../src/router/session-router.js";
 import type { SessionStore } from "../../src/store/redis.js";
 import type { NormalizedMessage } from "../../src/im/types.js";
 
-// 假 store
-function fakeStore(): SessionStore & { sessions: Map<string, string> } {
-  const sessions = new Map<string, string>();
+// 假 store:记录 setStreamChunk 调用(覆盖式,最后一次是最终内容)
+function fakeStore(opts: { duplicate?: boolean; lockBusy?: boolean; sessions?: Map<string, string> } = {}) {
+  const sessions = opts.sessions ?? new Map<string, string>();
+  const streamChunks: { streamId: string; content: string; finish: boolean }[] = [];
   return {
     sessions,
-    async getSession(k) { return sessions.has(k) ? { sessionId: sessions.get(k)! } : null; },
-    async setSession(k, sid) { sessions.set(k, sid); },
-    async tryAcquireLock() { return true; },
+    streamChunks,
+    async getSession(k: string) { return sessions.has(k) ? { sessionId: sessions.get(k)! } : null; },
+    async setSession(k: string, sid: string) { sessions.set(k, sid); },
+    async tryAcquireLock() { return !opts.lockBusy; },
     async releaseLock() {},
-    async isDuplicate() { return false; },
-  } as any;
+    async isDuplicate() { return opts.duplicate ?? false; },
+    async setStreamChunk(streamId: string, content: string, finish: boolean) {
+      streamChunks.push({ streamId, content, finish });
+    },
+    async getStreamState() { return null; },
+  } as any as SessionStore & { streamChunks: { streamId: string; content: string; finish: boolean }[] };
 }
 
 function mkMsg(over: Partial<NormalizedMessage> = {}): NormalizedMessage {
@@ -21,178 +27,144 @@ function mkMsg(over: Partial<NormalizedMessage> = {}): NormalizedMessage {
 }
 
 describe("SessionRouter", () => {
-  it("首次消息:新建会话并回写 sessionId,推送 final", async () => {
+  it("首次消息:新建会话回写 sessionId,流式推送 final(最后 finish=true)", async () => {
     const store = fakeStore();
-    const replies: string[] = [];
     let receivedProjectDir: string | undefined;
     const fakeAdapter = {
       async start(o: any) {
         receivedProjectDir = o.projectDir;
         return {
           sessionId: "sid-new",
-          async *send(_t: string) { yield { type: "final", text: "回复内容" }; },
+          async *send() { yield { type: "final", text: "回复内容" }; },
           kill() {},
         };
       },
     };
     const router = new SessionRouter({
-      store,
-      getAdapter: () => fakeAdapter,
-      defaultCli: "claude",
-      projectDir: "/tmp/proj",
-      timeoutSec: 180,
-      onReply: async (text) => { replies.push(text); },
-      isAllowed: () => true,
+      store, getAdapter: () => fakeAdapter as any,
+      defaultCli: "claude", projectDir: "/tmp/proj", timeoutSec: 180, isAllowed: () => true,
     });
-    await router.handle(mkMsg());
+    await router.handle(mkMsg(), "stream-1");
     expect(store.sessions.get("wecom_1:p2p:zhangsan:zhangsan:claude")).toBe("sid-new");
     expect(receivedProjectDir).toBe("/tmp/proj");
-    expect(replies.join("")).toContain("回复内容");
+    // 流式:应有 chunk(中间 finish=false)+ 最终(finish=true)
+    expect(store.streamChunks.length).toBeGreaterThanOrEqual(1);
+    const last = store.streamChunks[store.streamChunks.length - 1];
+    expect(last.finish).toBe(true);
+    expect(last.content).toContain("回复内容");
   });
 
-  it("白名单外用户:回无权限,不执行", async () => {
+  it("白名单外用户:回无权限(finish=true),不执行 CLI", async () => {
     const store = fakeStore();
     const started = vi.fn();
     const router = new SessionRouter({
-      store,
-      getAdapter: () => ({ async start() { started(); return { async *send(){}, kill(){} }; } }),
-      defaultCli: "claude", projectDir: "/tmp/proj", timeoutSec: 180,
-      onReply: async () => {},
-      isAllowed: () => false,
+      store, getAdapter: () => ({ async start() { started(); return { async *send(){}, kill(){} }; } }) as any,
+      defaultCli: "claude", projectDir: "/tmp/proj", timeoutSec: 180, isAllowed: () => false,
     });
-    await router.handle(mkMsg());
+    await router.handle(mkMsg(), "s");
     expect(started).not.toHaveBeenCalled();
+    expect(store.streamChunks[0].content).toBe("无权限使用该机器人");
+    expect(store.streamChunks[0].finish).toBe(true);
   });
 
-  it("锁占用:回上一条处理中,不启动 CLI", async () => {
-    const store = fakeStore();
-    let lockBusy = true;
-    store.tryAcquireLock = async () => !lockBusy;
+  it("锁占用:回上一条处理中(finish=true),不启动 CLI", async () => {
+    const store = fakeStore({ lockBusy: true });
     const started = vi.fn();
     const router = new SessionRouter({
-      store,
-      getAdapter: () => ({ async start() { started(); return { async *send(){}, kill(){} }; } }),
-      defaultCli: "claude", projectDir: "/tmp/proj", timeoutSec: 180,
-      onReply: async (t) => { expect(t).toContain("处理中"); },
-      isAllowed: () => true,
+      store, getAdapter: () => ({ async start() { started(); return { async *send(){}, kill(){} }; } }) as any,
+      defaultCli: "claude", projectDir: "/tmp/proj", timeoutSec: 180, isAllowed: () => true,
     });
-    await router.handle(mkMsg());
+    await router.handle(mkMsg(), "s");
     expect(started).not.toHaveBeenCalled();
+    expect(store.streamChunks[0].content).toContain("处理中");
   });
 
   it("resume:已有 session 时 adapter.start 收到 sessionId", async () => {
-    const store = fakeStore();
-    store.sessions.set("wecom_1:p2p:zhangsan:zhangsan:claude", "sid-old");
+    const store = fakeStore({ sessions: new Map([["wecom_1:p2p:zhangsan:zhangsan:claude", "sid-old"]]) });
     let receivedSid: string | undefined;
     const router = new SessionRouter({
-      store,
-      getAdapter: () => ({
+      store, getAdapter: () => ({
         async start(o: any) { receivedSid = o.sessionId; return { sessionId: "sid-old", async *send(){ yield {type:"final",text:"x"}; }, kill(){} }; },
-      }),
-      defaultCli: "claude", projectDir: "/tmp/proj", timeoutSec: 180,
-      onReply: async () => {},
-      isAllowed: () => true,
+      }) as any,
+      defaultCli: "claude", projectDir: "/tmp/proj", timeoutSec: 180, isAllowed: () => true,
     });
-    await router.handle(mkMsg());
+    await router.handle(mkMsg(), "s");
     expect(receivedSid).toBe("sid-old");
   });
 
   it("@codex 前缀:Key 的 cliType 为 codex", async () => {
     const store = fakeStore();
     let adapterType = "";
+    const getAdapter = (t: any) => { adapterType = t; return { async start(){ return { sessionId:"sid-codex", async *send(){ yield {type:"final",text:"x"}; }, kill(){} }; } }; };
     const router = new SessionRouter({
-      store,
-      getAdapter: (t) => { adapterType = t; return { async start(){ return { sessionId: "sid-codex", async *send(){ yield {type:"final",text:"x"}; }, kill(){} }; } }; },
-      defaultCli: "claude", projectDir: "/tmp/proj", timeoutSec: 180, cliSwitchPrefix: "@",
-      onReply: async () => {},
-      isAllowed: () => true,
+      store, getAdapter: getAdapter as any,
+      defaultCli: "claude", projectDir: "/tmp/proj", timeoutSec: 180, cliSwitchPrefix: "@", isAllowed: () => true,
     });
-    await router.handle(mkMsg({ text: "@codex 重构一下" }));
+    await router.handle(mkMsg({ text: "@codex 重构一下" }), "s");
     expect(adapterType).toBe("codex");
-    // Key 含 codex
     expect(store.sessions.has("wecom_1:p2p:zhangsan:zhangsan:codex")).toBe(true);
   });
 
-  // C2 补测试
-  it("store.isDuplicate 抛错时回服务暂时不可用,不执行 CLI", async () => {
-    const store = fakeStore();
-    store.isDuplicate = async () => { throw new Error("redis down"); };
+  it("去重:重复消息回'消息已处理'不执行 CLI", async () => {
+    const store = fakeStore({ duplicate: true });
     const started = vi.fn();
-    const replies: string[] = [];
     const router = new SessionRouter({
-      store,
-      getAdapter: () => ({ async start() { started(); return { async *send(){}, kill(){} }; } }),
-      defaultCli: "claude", projectDir: "/tmp/proj", timeoutSec: 180,
-      onReply: async (t) => { replies.push(t); },
-      isAllowed: () => true,
+      store, getAdapter: () => ({ async start() { started(); return { async *send(){}, kill(){} }; } }) as any,
+      defaultCli: "claude", projectDir: "/tmp/proj", timeoutSec: 180, isAllowed: () => true,
     });
-    await router.handle(mkMsg());
+    await router.handle(mkMsg(), "s");
     expect(started).not.toHaveBeenCalled();
-    expect(replies.join("")).toContain("服务暂时不可用");
+    expect(store.streamChunks[0].content).toBe("消息已处理");
   });
 
-  it("adapter.start 抛错时回启动失败并释放锁", async () => {
+  it("流式:多个 final chunk 实时推送累积内容(覆盖式)", async () => {
     const store = fakeStore();
-    let lockReleased = false;
-    store.releaseLock = async () => { lockReleased = true; };
-    const replies: string[] = [];
+    const fakeAdapter = {
+      async start() {
+        return {
+          sessionId: "sid",
+          async *send() {
+            yield { type: "final", text: "第一" };
+            yield { type: "final", text: "第二" };
+          },
+          kill() {},
+        };
+      },
+    };
     const router = new SessionRouter({
-      store,
-      getAdapter: () => ({ async start() { throw new Error("cli crash"); } }),
-      defaultCli: "claude", projectDir: "/tmp/proj", timeoutSec: 180,
-      onReply: async (t) => { replies.push(t); },
-      isAllowed: () => true,
+      store, getAdapter: () => fakeAdapter as any,
+      defaultCli: "claude", projectDir: "/tmp/proj", timeoutSec: 180, isAllowed: () => true,
     });
-    await router.handle(mkMsg());
-    expect(replies.join("")).toContain("启动失败");
-    expect(lockReleased).toBe(true);
+    await router.handle(mkMsg(), "stream-multi");
+    // 应有 3 次推送:chunk1 "第一"(finish=false)、chunk2 "第一第二"(finish=false)、最终(finish=true)
+    const contents = store.streamChunks.map((c) => c.content);
+    expect(contents).toContain("第一");
+    expect(contents).toContain("第一第二");
+    const last = store.streamChunks[store.streamChunks.length - 1];
+    expect(last.finish).toBe(true);
+    expect(last.content).toBe("第一第二");
   });
 
-  // I6 补测试
   it("群聊隔离:同群不同用户 Key 不同,session 各自独立", async () => {
     const store = fakeStore();
-    let n = 0;
     const router = new SessionRouter({
-      store,
-      getAdapter: () => ({
-        async start(o: any) {
-          n++;
-          return { sessionId: o.sessionId ?? `sid-${n}`, async *send(){ yield {type:"final",text:"ok"}; }, kill(){} };
-        },
-      }),
-      defaultCli: "claude", projectDir: "/tmp/proj", timeoutSec: 180,
-      onReply: async () => {},
-      isAllowed: () => true,
+      store, getAdapter: () => ({ async start(){ return { sessionId:"s", async *send(){ yield {type:"final",text:"ok"}; }, kill(){} }; } }) as any,
+      defaultCli: "claude", projectDir: "/tmp/proj", timeoutSec: 180, isAllowed: () => true,
     });
-    // 同群(group:room1)两用户
-    await router.handle(mkMsg({ chatSceneId: "group:room1", userId: "alice", msgId: "m-a" }));
-    await router.handle(mkMsg({ chatSceneId: "group:room1", userId: "bob", msgId: "m-b" }));
-    // Key 不同
-    expect(store.sessions.has("wecom_1:group:room1:alice:claude")).toBe(true);
-    expect(store.sessions.has("wecom_1:group:room1:bob:claude")).toBe(true);
-    // session 各自独立
-    expect(store.sessions.get("wecom_1:group:room1:alice:claude")).not.toBe(
-      store.sessions.get("wecom_1:group:room1:bob:claude")
-    );
+    await router.handle(mkMsg({ chatSceneId: "group:g1", userId: "alice", msgId: "a1" }), "sa");
+    await router.handle(mkMsg({ chatSceneId: "group:g1", userId: "bob", msgId: "b1" }), "sb");
+    expect(store.sessions.has("wecom_1:group:g1:alice:claude")).toBe(true);
+    expect(store.sessions.has("wecom_1:group:g1:bob:claude")).toBe(true);
   });
 
-  it("去重:同一 msgId 重复消息不启动 CLI", async () => {
+  it("adapter.start 失败:回'claude 启动失败'(finish=true)", async () => {
     const store = fakeStore();
-    let dup = false;
-    store.isDuplicate = async () => dup;
-    const started = vi.fn();
     const router = new SessionRouter({
-      store,
-      getAdapter: () => ({ async start() { started(); return { sessionId:"s", async *send(){ yield {type:"final",text:"x"}; }, kill(){} }; } }),
-      defaultCli: "claude", projectDir: "/tmp/proj", timeoutSec: 180,
-      onReply: async () => {},
-      isAllowed: () => true,
+      store, getAdapter: () => ({ async start(){ throw new Error("boom"); } }) as any,
+      defaultCli: "claude", projectDir: "/tmp/proj", timeoutSec: 180, isAllowed: () => true,
     });
-    await router.handle(mkMsg({ msgId: "dup-1" }));
-    expect(started).toHaveBeenCalledTimes(1);
-    // 第二次同一 msgId 视为重复
-    dup = true;
-    await router.handle(mkMsg({ msgId: "dup-1" }));
-    expect(started).toHaveBeenCalledTimes(1);
+    await router.handle(mkMsg(), "s");
+    expect(store.streamChunks[0].content).toContain("启动失败");
+    expect(store.streamChunks[0].finish).toBe(true);
   });
 });
