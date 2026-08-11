@@ -46,6 +46,13 @@ describe("parseSseEvents", () => {
     for await (const e of parseSseEvents(fromBuffers([input]))) events.push(e);
     expect(events).toEqual([]);
   });
+
+  it("kind 字段事件也能解析(无 type,claude 消息格式)", async () => {
+    const input = Buffer.from(`data: ${JSON.stringify({ kind: "text", role: "assistant", content: "你好" })}\n\n`);
+    const events = [];
+    for await (const e of parseSseEvents(fromBuffers([input]))) events.push(e);
+    expect(events).toEqual([{ kind: "text", role: "assistant", content: "你好" }]);
+  });
 });
 
 describe("extractText", () => {
@@ -84,5 +91,27 @@ describe("extractText", () => {
     expect(extractText({ type: "session-id", sessionId: "s" })).toBeNull();
     expect(extractText({ type: "done" })).toBeNull();
     expect(extractText({ type: "error", error: "e" })).toBeNull();
+  });
+
+  it("claude 真实格式 kind:text role:assistant 取 content", () => {
+    expect(extractText({ kind: "text", role: "assistant", content: "你的消息似乎出现了编码乱码" })).toBe("你的消息似乎出现了编码乱码");
+  });
+
+  it("kind:thinking 返回 null(非回复)", () => {
+    expect(extractText({ kind: "thinking", content: "思考中" })).toBeNull();
+  });
+
+  it("kind:tool_use / tool_result 返回 null", () => {
+    expect(extractText({ kind: "tool_use", toolName: "Bash", toolInput: {} })).toBeNull();
+    expect(extractText({ kind: "tool_result", toolId: "t", content: "..." })).toBeNull();
+  });
+
+  it("kind:status token_budget 返回 null(有 text 字段但不提取)", () => {
+    expect(extractText({ kind: "status", text: "token_budget", tokenBudget: {} })).toBeNull();
+  });
+
+  it("kind:complete / session_created 返回 null", () => {
+    expect(extractText({ kind: "complete", exitCode: 0 })).toBeNull();
+    expect(extractText({ kind: "session_created", newSessionId: "s" })).toBeNull();
   });
 });

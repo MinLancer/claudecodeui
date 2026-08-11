@@ -1,7 +1,10 @@
 // claudecodeui /api/agent 的 SSE 流解析。
 // 事件格式(SSEStreamWriter.send):`data: ${JSON}\n\n`,多行 data 按 SSE 规范以 \n 拼接。
+// 事件有两种类型字段(实证自真实 /api/agent 输出):
+//   控制类用 `type`:status / session-id / done
+//   消息类用 `kind`:session_created / thinking / tool_use / tool_result / text / status / complete
 
-export type SseEvent = { type: string; data?: unknown };
+export type SseEvent = { type?: string; kind?: string; [key: string]: unknown };
 
 export async function* parseSseEvents(chunks: AsyncIterable<Buffer>): AsyncIterable<SseEvent> {
   let buffer = "";
@@ -20,7 +23,9 @@ export async function* parseSseEvents(chunks: AsyncIterable<Buffer>): AsyncItera
       if (dataLines.length === 0) continue;
       try {
         const parsed = JSON.parse(dataLines.join("\n"));
-        if (parsed && typeof parsed === "object" && typeof parsed.type === "string") {
+        // 有 type 或 kind 字段即视为事件(否则跳过非事件 JSON)
+        if (parsed && typeof parsed === "object"
+          && (typeof parsed.type === "string" || typeof parsed.kind === "string")) {
           yield parsed as SseEvent;
         }
       } catch {
@@ -30,10 +35,15 @@ export async function* parseSseEvents(chunks: AsyncIterable<Buffer>): AsyncItera
   }
 }
 
-// 从 SSE 事件提取面向用户的文本。
-// 依据:claudecodeui server/modules/git/git.routes.ts:1051-1063 的真实消费逻辑。
+// 从 SSE 事件提取面向用户的最终回复文本。
+// claude 真实格式(实证):`{kind:"text", role:"assistant", content}` 是最终回复。
+// 另兼容 cursor-output / claude-response(其他 provider 或历史格式)。
 export function extractText(event: SseEvent): string | null {
   const e = event as Record<string, unknown>;
+  // claude 真实格式:assistant 的最终文本回复
+  if (e.kind === "text" && e.role === "assistant" && typeof e.content === "string") {
+    return e.content as string;
+  }
   if (e.type === "claude-response" && e.data) {
     const data = e.data as Record<string, unknown>;
     const message = (data.message as Record<string, unknown>) || data;

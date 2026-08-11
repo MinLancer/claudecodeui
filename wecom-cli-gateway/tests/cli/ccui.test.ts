@@ -30,6 +30,27 @@ describe("CcuiSession", () => {
     expect(session.sessionId).toBe("sid-1");
   });
 
+  it("claude 真实 SSE 格式(实证):status→session-id→kind:text→done", async () => {
+    const session = new CcuiSession({
+      baseUrl: "http://x", apiKey: "k", provider: "claude",
+      projectDir: "/tmp/p", fetchSse: fakeFetchSse([
+        { type: "status", message: "Session started" },
+        { type: "session-id", sessionId: "sid-real" },
+        { kind: "session_created", newSessionId: "sid-real" },
+        { kind: "thinking", content: "思考中" },
+        { kind: "status", text: "token_budget", tokenBudget: {} },
+        { kind: "text", role: "assistant", content: "最终回复" },
+        { kind: "complete", exitCode: 0, success: true },
+        { type: "done" },
+      ]),
+      timeoutMs: 5000,
+    });
+    const chunks = [];
+    for await (const c of session.send("hi")) chunks.push(c);
+    expect(chunks).toEqual([{ type: "final", text: "最终回复" }]);
+    expect(session.sessionId).toBe("sid-real");
+  });
+
   it("error 事件 yield error chunk", async () => {
     const session = new CcuiSession({
       baseUrl: "http://x", apiKey: "k", provider: "claude", projectDir: "/tmp/p",
