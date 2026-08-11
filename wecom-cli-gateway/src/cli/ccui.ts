@@ -1,4 +1,4 @@
-import type { CliSession, StreamChunk, CliType } from "./types.js";
+import type { CliSession, StreamChunk, CliType, CliAdapter, CliStartOpts } from "./types.js";
 import { parseSseEvents, extractText } from "./ccui-sse.js";
 
 // 注入式 SSE fetch:返回原始字节流,便于测试。
@@ -68,3 +68,55 @@ export class CcuiSession implements CliSession {
     this.controller?.abort();
   }
 }
+
+export interface CcuiAdapterOpts {
+  baseUrl: string;
+  apiKey: string;
+  provider: CliType;
+  fetchSse: FetchSseFn;
+  timeoutMs?: number;
+}
+
+export class CcuiAdapter implements CliAdapter {
+  readonly type: CliType;
+  constructor(private opts: CcuiAdapterOpts) {
+    this.type = opts.provider;
+  }
+
+  // 与其他 adapter 一致:简化为 true。桥接模式下 /api/agent 可达性在首次 send 时验证。
+  async isAvailable(): Promise<boolean> {
+    return true;
+  }
+
+  async start(opts: CliStartOpts): Promise<CliSession> {
+    return new CcuiSession({
+      baseUrl: this.opts.baseUrl,
+      apiKey: this.opts.apiKey,
+      provider: this.opts.provider,
+      projectDir: opts.projectDir,
+      sessionId: opts.sessionId,
+      fetchSse: this.opts.fetchSse,
+      timeoutMs: this.opts.timeoutMs ?? 600000,
+    });
+  }
+}
+
+// 默认 SSE fetch 实现:用 Node 18+ 全局 fetch,把 ReadableStream 转成 Buffer 流。
+export const defaultFetchSse: FetchSseFn = async function* (url, init) {
+  const res = await fetch(url, init);
+  if (!res.ok) {
+    const detail = await res.text().catch(() => "");
+    throw new Error(`/api/agent 返回 HTTP ${res.status}: ${detail}`);
+  }
+  if (!res.body) throw new Error("/api/agent 无响应体");
+  const reader = res.body.getReader();
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      yield Buffer.from(value);
+    }
+  } finally {
+    reader.releaseLock();
+  }
+};

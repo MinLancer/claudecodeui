@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { CcuiSession, type FetchSseFn } from "../../src/cli/ccui.js";
+import { CcuiSession, CcuiAdapter, defaultFetchSse, type FetchSseFn } from "../../src/cli/ccui.js";
 
 // 把若干 SSE 事件序列化为 Buffer 流(模拟 /api/agent 响应)
 function sse(...events: object[]): Buffer {
@@ -103,5 +103,50 @@ describe("CcuiSession", () => {
       session.kill();
     }
     expect(chunks.length).toBeGreaterThanOrEqual(1);
+  });
+});
+
+describe("CcuiAdapter", () => {
+  it("type 等于构造传入的 provider", () => {
+    const a = new CcuiAdapter({ baseUrl: "http://x", apiKey: "k", provider: "codex", fetchSse: fakeFetchSse([]) });
+    expect(a.type).toBe("codex");
+  });
+
+  it("isAvailable 返回 true(与其他 adapter 一致)", async () => {
+    const a = new CcuiAdapter({ baseUrl: "http://x", apiKey: "k", provider: "claude", fetchSse: fakeFetchSse([]) });
+    expect(await a.isAvailable()).toBe(true);
+  });
+
+  it("start 返回 CcuiSession 且 send 能拿到 final 文本", async () => {
+    const a = new CcuiAdapter({
+      baseUrl: "http://x", apiKey: "k", provider: "claude",
+      fetchSse: fakeFetchSse([
+        { type: "session-id", sessionId: "s9" },
+        { type: "claude-response", data: { type: "assistant", message: { content: [{ type: "text", text: "ok" }] } } },
+        { type: "done" },
+      ]),
+      timeoutMs: 5000,
+    });
+    const session = await a.start({ projectDir: "/tmp/proj" });
+    const chunks = [];
+    for await (const c of session.send("hi")) chunks.push(c);
+    expect(chunks).toEqual([{ type: "final", text: "ok" }]);
+    expect(session.sessionId).toBe("s9");
+  });
+
+  it("start 携带 sessionId 时透传给 session", async () => {
+    let capturedBody: any;
+    const a = new CcuiAdapter({
+      baseUrl: "http://x", apiKey: "k", provider: "claude",
+      fetchSse: async function* (_u, init) { capturedBody = JSON.parse(init.body); yield sse({ type: "done" }); },
+      timeoutMs: 5000,
+    });
+    const session = await a.start({ projectDir: "/tmp/p", sessionId: "sid-resume" });
+    for await (const _ of session.send("go")) { _; }
+    expect(capturedBody.sessionId).toBe("sid-resume");
+  });
+
+  it("defaultFetchSse 是函数(仅类型/存在性,不发真实网络)", () => {
+    expect(typeof defaultFetchSse).toBe("function");
   });
 });
