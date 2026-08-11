@@ -12,6 +12,9 @@ export interface RouterDeps {
   cliSwitchPrefix?: string;
   // 白名单判断:由 bot 配置注入
   isAllowed: (userId: string) => boolean;
+  // 主动回复回调:claude 完成后,若消息携带 responseUrl(企微),用其主动推送最终结果。
+  // 用于兜底——企微流式刷新可能因 claude 处理过慢而超时,response_url(1h 有效)保证结果送达。
+  sendActiveReply?: (msg: NormalizedMessage, content: string) => Promise<void>;
 }
 
 export class SessionRouter {
@@ -24,6 +27,18 @@ export class SessionRouter {
       console.log(`[router] push stream=${streamId.slice(0,12)} finish=${finish} len=${content.length}`);
     } catch {
       // Redis 写失败忽略,避免影响主流程(刷新回调会拉到旧值或空)
+    }
+  }
+
+  // 主动回复兜底:claude 完成后,若消息带 responseUrl(企微),主动推送最终结果。
+  // 企微流式刷新可能在 claude 处理过慢时超时,response_url(1h 有效)保证结果仍能送达。
+  private async activePush(msg: NormalizedMessage, content: string): Promise<void> {
+    if (!content || !this.deps.sendActiveReply || !msg.responseUrl) return;
+    try {
+      await this.deps.sendActiveReply(msg, content);
+      console.log(`[router] active-reply push len=${content.length}`);
+    } catch (e) {
+      console.error("[router] active-reply 失败:", (e as Error).message);
     }
   }
 
@@ -119,7 +134,9 @@ export class SessionRouter {
         }
 
         if (timedOut) {
-          await this.pushStream(streamId, finalChunks.join("") || "⏱ 处理超时,已终止", true);
+          const timedOutReply = finalChunks.join("") || "⏱ 处理超时,已终止";
+          await this.pushStream(streamId, timedOutReply, true);
+          await this.activePush(msg, timedOutReply);
           return;
         }
 
@@ -131,6 +148,7 @@ export class SessionRouter {
         // 9. 流式结束:finish=true(最终内容已在循环里推送过,这里标记完成)
         const reply = finalChunks.join("").trim();
         await this.pushStream(streamId, reply || "(空回复)", true);
+        await this.activePush(msg, reply);
       } finally {
         await this.deps.store.releaseLock(key);
       }

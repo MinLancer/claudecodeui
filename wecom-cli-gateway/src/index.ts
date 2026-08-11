@@ -69,6 +69,18 @@ async function main() {
 
   // 为每个 bot 建 router(各自 defaultCli/timeout/白名单)
   const routers: Record<string, SessionRouter> = {};
+
+  // 先实例化 IM 适配器(主动回复需要 adapter.sendMessage)
+  for (const bot of cfg.bots) {
+    if (bot.platform === "wecom") {
+      imAdapters[bot.id] = new WeComAdapter(bot.credentials as any, bot.id);
+    } else if (bot.platform === "dingtalk") {
+      imAdapters[bot.id] = new DingtalkAdapter();
+    } else if (bot.platform === "feishu") {
+      imAdapters[bot.id] = new FeishuAdapter();
+    }
+  }
+
   for (const bot of cfg.bots) {
     const router = new SessionRouter({
       store,
@@ -79,17 +91,14 @@ async function main() {
       cliSwitchPrefix: bot.cliSwitchPrefix,
       // 白名单:allowedUsers 为空表示不限制(联调/开放),否则仅放行名单内用户
       isAllowed: (uid) => bot.allowedUsers.length === 0 || bot.allowedUsers.includes(uid),
+      // claude 完成后用回调的 response_url 主动推送最终结果(兜底企微流式刷新超时)
+      sendActiveReply: async (msg, content) => {
+        const adapter = imAdapters[msg.botId];
+        if (!adapter) return;
+        await adapter.sendMessage({ toUser: msg.userId, text: content, responseUrl: msg.responseUrl });
+      },
     });
     routers[bot.id] = router;
-
-    // 实例化 IM 适配器(本期仅 wecom 完整)
-    if (bot.platform === "wecom") {
-      imAdapters[bot.id] = new WeComAdapter(bot.credentials as any, bot.id);
-    } else if (bot.platform === "dingtalk") {
-      imAdapters[bot.id] = new DingtalkAdapter();
-    } else if (bot.platform === "feishu") {
-      imAdapters[bot.id] = new FeishuAdapter();
-    }
   }
 
   // webhook 依赖

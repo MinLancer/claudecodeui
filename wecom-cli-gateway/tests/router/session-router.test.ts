@@ -167,4 +167,31 @@ describe("SessionRouter", () => {
     expect(store.streamChunks[0].content).toContain("启动失败");
     expect(store.streamChunks[0].finish).toBe(true);
   });
+
+  it("携带 responseUrl 且正常完成:调用 sendActiveReply 主动推送最终内容", async () => {
+    const store = fakeStore();
+    const sendActiveReply = vi.fn(async () => {});
+    const router = new SessionRouter({
+      store, getAdapter: () => ({ async start(){ return { sessionId:"s", async *send(){ yield {type:"final",text:"最终结果"}; }, kill(){} }; } }) as any,
+      defaultCli: "claude", projectDir: "/tmp/proj", timeoutSec: 180, isAllowed: () => true,
+      sendActiveReply,
+    });
+    await router.handle(mkMsg({ responseUrl: "https://qyapi.weixin.qq.com/cgi-bin/aibot/response?response_code=abc" }), "stream-r");
+    expect(sendActiveReply).toHaveBeenCalledTimes(1);
+    const [msg, content] = sendActiveReply.mock.calls[0];
+    expect(msg.responseUrl).toBe("https://qyapi.weixin.qq.com/cgi-bin/aibot/response?response_code=abc");
+    expect(content).toContain("最终结果");
+  });
+
+  it("无 responseUrl:不调用 sendActiveReply", async () => {
+    const store = fakeStore();
+    const sendActiveReply = vi.fn(async () => {});
+    const router = new SessionRouter({
+      store, getAdapter: () => ({ async start(){ return { sessionId:"s", async *send(){ yield {type:"final",text:"ok"}; }, kill(){} }; } }) as any,
+      defaultCli: "claude", projectDir: "/tmp/proj", timeoutSec: 180, isAllowed: () => true,
+      sendActiveReply,
+    });
+    await router.handle(mkMsg(), "s");
+    expect(sendActiveReply).not.toHaveBeenCalled();
+  });
 });
