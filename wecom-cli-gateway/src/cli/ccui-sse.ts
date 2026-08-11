@@ -29,3 +29,33 @@ export async function* parseSseEvents(chunks: AsyncIterable<Buffer>): AsyncItera
     }
   }
 }
+
+// 从 SSE 事件提取面向用户的文本。
+// 依据:claudecodeui server/modules/git/git.routes.ts:1051-1063 的真实消费逻辑。
+export function extractText(event: SseEvent): string | null {
+  const e = event as Record<string, unknown>;
+  if (e.type === "claude-response" && e.data) {
+    const data = e.data as Record<string, unknown>;
+    const message = (data.message as Record<string, unknown>) || data;
+    const content = message && (message as Record<string, unknown>).content;
+    if (Array.isArray(content)) {
+      let text = "";
+      for (const item of content) {
+        if (item && typeof item === "object"
+          && (item as Record<string, unknown>).type === "text"
+          && typeof (item as Record<string, unknown>).text === "string") {
+          text += (item as Record<string, unknown>).text as string;
+        }
+      }
+      return text || null;
+    }
+    return null;
+  }
+  if (e.type === "cursor-output" && typeof e.output === "string") {
+    return e.output;
+  }
+  if (e.type === "text" && typeof e.text === "string") {
+    return e.text;
+  }
+  return null;
+}

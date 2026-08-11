@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { parseSseEvents } from "../../src/cli/ccui-sse.js";
+import { parseSseEvents, extractText } from "../../src/cli/ccui-sse.js";
 
 async function* fromBuffers(bufs: Buffer[]) {
   for (const b of bufs) yield b;
@@ -45,5 +45,44 @@ describe("parseSseEvents", () => {
     const events = [];
     for await (const e of parseSseEvents(fromBuffers([input]))) events.push(e);
     expect(events).toEqual([]);
+  });
+});
+
+describe("extractText", () => {
+  it("claude-response 含单个 text 块", () => {
+    const ev = { type: "claude-response", data: { type: "assistant", message: { content: [{ type: "text", text: "你好" }] } } };
+    expect(extractText(ev)).toBe("你好");
+  });
+
+  it("claude-response 含多个 text 块拼接", () => {
+    const ev = { type: "claude-response", data: { type: "assistant", message: { content: [{ type: "text", text: "a" }, { type: "text", text: "b" }] } } };
+    expect(extractText(ev)).toBe("ab");
+  });
+
+  it("claude-response 仅含 thinking/tool_use(无 text)返回 null", () => {
+    const ev = { type: "claude-response", data: { type: "assistant", message: { content: [{ type: "thinking", thinking: "..." }, { type: "tool_use", name: "Bash" }] } } };
+    expect(extractText(ev)).toBeNull();
+  });
+
+  it("claude-response data 无 message 时降级取 data 本身", () => {
+    const ev = { type: "claude-response", data: { content: [{ type: "text", text: "x" }] } };
+    expect(extractText(ev)).toBe("x");
+  });
+
+  it("cursor-output 事件取 output", () => {
+    const ev = { type: "cursor-output", output: "cursor 文本" };
+    expect(extractText(ev)).toBe("cursor 文本");
+  });
+
+  it("text 事件取 text", () => {
+    const ev = { type: "text", text: "纯文本" };
+    expect(extractText(ev)).toBe("纯文本");
+  });
+
+  it("status/session-id/done/error 返回 null", () => {
+    expect(extractText({ type: "status", message: "x" })).toBeNull();
+    expect(extractText({ type: "session-id", sessionId: "s" })).toBeNull();
+    expect(extractText({ type: "done" })).toBeNull();
+    expect(extractText({ type: "error", error: "e" })).toBeNull();
   });
 });
