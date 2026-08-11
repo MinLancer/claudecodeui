@@ -28,9 +28,13 @@ export class CcuiSession implements CliSession {
     this.controller = new AbortController();
     const timer = setTimeout(() => this.controller!.abort(), this.opts.timeoutMs);
     try {
+      // 自动化环境约束:企微无交互能力,阻止 claude 用 AskUserQuestion/ExitPlanMode 提问卡死。
+      const AUTO_MODE_PROMPT =
+        "【自动化环境】请以 auto mode 自主执行。不要使用 AskUserQuestion、ExitPlanMode 等需要用户交互的工具;" +
+        "遇到需要决策时,基于已有信息自行判断并继续执行。";
       const body = JSON.stringify({
         projectPath: this.opts.projectDir,
-        message: text,
+        message: `${AUTO_MODE_PROMPT}\n\n${text}`,
         provider: this.opts.provider,
         stream: true,
         sessionId: this.opts.sessionId || undefined,

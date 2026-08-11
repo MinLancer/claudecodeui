@@ -77,7 +77,7 @@ describe("CcuiSession", () => {
     expect(capturedBody.provider).toBe("claude");
     expect(capturedBody.stream).toBe(true);
     expect(capturedBody.sessionId).toBe("sid-old");
-    expect(capturedBody.message).toBe("续");
+    expect(capturedBody.message).toContain("续");
   });
 
   it("请求头含 x-api-key 与 content-type", async () => {
