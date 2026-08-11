@@ -168,15 +168,31 @@ describe("SessionRouter", () => {
     expect(store.streamChunks[0].finish).toBe(true);
   });
 
-  it("携带 responseUrl 且正常完成:调用 sendActiveReply 主动推送最终内容", async () => {
+  it("快速完成(未触发安抚)+ responseUrl:不调用 sendActiveReply(被动流式已送达)", async () => {
     const store = fakeStore();
     const sendActiveReply = vi.fn(async () => {});
     const router = new SessionRouter({
       store, getAdapter: () => ({ async start(){ return { sessionId:"s", async *send(){ yield {type:"final",text:"最终结果"}; }, kill(){} }; } }) as any,
       defaultCli: "claude", projectDir: "/tmp/proj", timeoutSec: 180, isAllowed: () => true,
-      sendActiveReply,
+      sendActiveReply, reassureSec: 10,
     });
     await router.handle(mkMsg({ responseUrl: "https://qyapi.weixin.qq.com/cgi-bin/aibot/response?response_code=abc" }), "stream-r");
+    expect(sendActiveReply).not.toHaveBeenCalled();
+  });
+
+  it("触发安抚(超 reassureSec)后完成:调用 sendActiveReply 主动推送", async () => {
+    const store = fakeStore();
+    const sendActiveReply = vi.fn(async () => {});
+    let releaseSend: (() => void) | undefined;
+    const router = new SessionRouter({
+      store, getAdapter: () => ({ async start(){ return { sessionId:"s", async *send(){ await new Promise<void>(r => { releaseSend = r; }); yield {type:"final",text:"最终结果"}; }, kill(){} }; } }) as any,
+      defaultCli: "claude", projectDir: "/tmp/proj", timeoutSec: 600, isAllowed: () => true,
+      sendActiveReply, reassureSec: 1,
+    });
+    const done = router.handle(mkMsg({ responseUrl: "https://qyapi.weixin.qq.com/cgi-bin/aibot/response?response_code=abc" }), "stream-r");
+    await new Promise((r) => setTimeout(r, 1500)); // 触发安抚
+    releaseSend?.();
+    await done;
     expect(sendActiveReply).toHaveBeenCalledTimes(1);
     const [msg, content] = sendActiveReply.mock.calls[0];
     expect(msg.responseUrl).toBe("https://qyapi.weixin.qq.com/cgi-bin/aibot/response?response_code=abc");

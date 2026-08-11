@@ -127,8 +127,11 @@ export class SessionRouter {
 
         // 安抚:claude 处理超过 reassureSec 仍未完成时,推安抚消息让企微显示"请您稍后"。
         // 仅推一次;之后若有新进度会覆盖,无新进度时企微刷新显示安抚而非干等。
+        // reassured 同时是"是否主动推送"的门槛:仅超时安抚后需主动推送兜底,快速完成靠被动流式即可。
+        let reassured = false;
         const reassureSec = this.deps.reassureSec ?? 180;
         const reassureTimer = setTimeout(() => {
+          reassured = true;
           this.pushStream(streamId, "请您稍后,待我处理完成后会主动通知您。", false);
         }, reassureSec * 1000);
 
@@ -147,7 +150,7 @@ export class SessionRouter {
         if (timedOut) {
           const timedOutReply = finalChunks.join("") || "⏱ 处理超时,已终止";
           await this.pushStream(streamId, timedOutReply, true);
-          await this.activePush(msg, timedOutReply);
+          if (reassured) await this.activePush(msg, timedOutReply);
           return;
         }
 
@@ -159,7 +162,8 @@ export class SessionRouter {
         // 9. 流式结束:finish=true(最终内容已在循环里推送过,这里标记完成)
         const reply = finalChunks.join("").trim();
         await this.pushStream(streamId, reply || "(空回复)", true);
-        await this.activePush(msg, reply);
+        // 仅在触发过安抚(处理超 reassureSec)时才主动推送;快速完成靠被动流式已送达。
+        if (reassured) await this.activePush(msg, reply);
       } finally {
         await this.deps.store.releaseLock(key);
       }
