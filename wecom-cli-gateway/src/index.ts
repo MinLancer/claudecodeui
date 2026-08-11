@@ -80,7 +80,8 @@ async function main() {
       projectDir: bot.projectDir,
       timeoutSec: bot.timeout,
       cliSwitchPrefix: bot.cliSwitchPrefix,
-      isAllowed: (uid) => bot.allowedUsers.includes(uid),
+      // 白名单:allowedUsers 为空表示不限制(联调/开放),否则仅放行名单内用户
+      isAllowed: (uid) => bot.allowedUsers.length === 0 || bot.allowedUsers.includes(uid),
     });
     routers[bot.id] = router;
 
@@ -101,11 +102,14 @@ async function main() {
       if (!adapter) return null;
       return adapter.parseMessage(body, headers);
     },
-    // 用户消息:异步启动 router.handle(streamId 用 msgId,与 webhook 首响应一致)
+    // 用户消息:同步初始化 stream 状态(content 空 finish=false),再异步启动 router。
+    // 同步初始化保证刷新回调来时能拿到状态(非 null),避免 claude 冷启动慢导致提前结束。
     handleUserMessage: async (msg) => {
+      const streamId = msg.msgId;
+      await store.setStreamChunk(streamId, "", false); // 同步写初始状态
       const router = routers[msg.botId];
-      if (router) await router.handle(msg, msg.msgId);
-      return msg.msgId;
+      if (router) router.handle(msg, streamId).catch((e) => console.error("router 异常:", e.message));
+      return streamId;
     },
     // 流式刷新回调:从 Redis 拉 stream 状态
     getStreamState: async (streamId) => store.getStreamState(streamId),

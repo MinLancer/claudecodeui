@@ -3,7 +3,8 @@ import type { NormalizedMessage } from "../im/types.js";
 
 export interface WebhookDeps {
   parseMessage: (body: Buffer, headers: object, botId: string, platform: string) => Promise<NormalizedMessage | null>;
-  // 用户消息:异步启动执行(CLI 跑 + chunk 写 Redis),返回首响应用的 streamId
+  // 用户消息:同步初始化 stream 状态(content 空 finish=false)再启动异步执行。
+  // 返回首响应 streamId。同步初始化保证后续刷新回调能拿到状态(非 null)。
   handleUserMessage: (msg: NormalizedMessage) => Promise<string | null>;
   // 流式刷新回调:按 streamId 返回最新 {content, finish}(或 null 表示无此 stream)
   getStreamState: (streamId: string) => Promise<{ content: string; finish: boolean } | null>;
@@ -44,22 +45,26 @@ export function registerWebhook(app: FastifyInstance, deps: WebhookDeps) {
       if (msg.streamId) {
         const st = await deps.getStreamState(msg.streamId);
         if (!st) {
-          // stream 不存在(超时/未找到):返回空内容 finish=true 结束
-          const resp = await deps.buildStreamResponse(msg.streamId, "", true, nonce);
+          // stream 不存在:可能是 router 异常未初始化状态。
+          // 返回空 content finish=false 让企微继续刷新(而非 finish=true 提前结束),
+          // 给 router 写入状态的机会(claude 冷启动慢,首次刷新可能早于状态写入)。
+          const resp = await deps.buildStreamResponse(msg.streamId, "", false, nonce);
           return reply.code(200).header("content-type", "application/json").send(resp);
         }
         const resp = await deps.buildStreamResponse(msg.streamId, st.content, st.finish, nonce);
         return reply.code(200).header("content-type", "application/json").send(resp);
       }
 
-      // 用户消息:异步启动执行(不阻塞),返回 stream 首响应(content 空,finish:false)
-      // 异步触发,不 await(5s 内必须返回首响应)
-      deps.handleUserMessage(msg).catch((e) => req.log.error({ err: e }, "handleUserMessage 异常"));
-      // 首响应 streamId:用 msgId 派生(同一消息的刷新回调会带此 id)
-      // 注意:首响应 streamId 必须与后续刷新回调里的 stream.id 一致。
-      // 但刷新回调的 stream.id 是企微按我们首响应的 id 推回的,所以这里生成 id 即可。
-      // 用 msgId 作 streamId 保证幂等(去重时同一消息不重复生成)
-      const streamId = msg.msgId;
+      // 用户消息:handleUserMessage 同步初始化 stream 状态 + 异步启动执行,
+      // 返回 streamId 作首响应(5s 内必须返回)。同步初始化保证刷新回调能拿到状态。
+      const streamId = await deps.handleUserMessage(msg).catch((e) => {
+        req.log.error({ err: e }, "handleUserMessage 异常");
+        return null;
+      });
+      if (!streamId) {
+        return reply.code(200).send({ status: "success" });
+      }
+      // 首响应:content 空,finish=false
       const resp = await deps.buildStreamResponse(streamId, "", false, nonce);
       return reply.code(200).header("content-type", "application/json").send(resp);
     } catch (e) {

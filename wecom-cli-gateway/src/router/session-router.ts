@@ -21,6 +21,7 @@ export class SessionRouter {
   private async pushStream(streamId: string, content: string, finish: boolean): Promise<void> {
     try {
       await this.deps.store.setStreamChunk(streamId, content, finish);
+      console.log(`[router] push stream=${streamId.slice(0,12)} finish=${finish} len=${content.length}`);
     } catch {
       // Redis 写失败忽略,避免影响主流程(刷新回调会拉到旧值或空)
     }

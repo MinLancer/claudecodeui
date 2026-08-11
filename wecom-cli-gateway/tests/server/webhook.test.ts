@@ -26,7 +26,7 @@ function makeApp(overrides: Partial<{
 }
 
 describe("webhook", () => {
-  it("用户消息 POST:异步触发 handleUserMessage,同步返回流式首响应", async () => {
+  it("用户消息 POST:handleUserMessage 同步初始化+返回 streamId,同步返回流式首响应", async () => {
     const { app, handleUserMessage, buildStreamResponse } = makeApp();
     const res = await app.inject({
       method: "POST", url: "/webhook/wecom/wecom_1",
@@ -37,7 +37,7 @@ describe("webhook", () => {
     const body = JSON.parse(res.body);
     expect(body.finish).toBe(false); // 首响应 finish=false
     expect(body.content).toBe(""); // 首响应 content 空
-    expect(handleUserMessage).toHaveBeenCalled(); // 异步触发
+    expect(handleUserMessage).toHaveBeenCalled(); // 同步触发(含初始化)
     expect(buildStreamResponse).toHaveBeenCalled();
   });
 
@@ -60,7 +60,7 @@ describe("webhook", () => {
     expect(getStreamState).toHaveBeenCalledWith("stream-1");
   });
 
-  it("流式刷新回调:getStreamState 无数据时返回 finish=true 空响应", async () => {
+  it("流式刷新回调:getStreamState 无数据时返回空 finish=false(让企微继续刷新)", async () => {
     const { app } = makeApp({
       parseMessage: async () => ({
         botId: "wecom_1", msgId: "", chatSceneId: "", userId: "", text: "", streamId: "gone",
@@ -73,7 +73,8 @@ describe("webhook", () => {
       headers: { nonce: "n3" },
     });
     const body = JSON.parse(res.body);
-    expect(body.finish).toBe(true);
+    expect(body.finish).toBe(false); // 不提前结束,让企微继续刷新等 router 写入
+    expect(body.content).toBe("");
   });
 
   it("parseMessage 返回 null 时回 success", async () => {

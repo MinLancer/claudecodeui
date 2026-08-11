@@ -55,9 +55,12 @@ export class WeComCrypto {
   decrypt(encryptedBase64: string): string {
     const encrypted = Buffer.from(encryptedBase64, "base64");
     const decipher = createDecipheriv("aes-256-cbc", this.key, this.iv);
-    decipher.setAutoPadding(true);
+    // 企微用 PKCS7 填充至 32 字节倍数(非 AES 标准 16 倍数),
+    // Node 的 setAutoPadding 按 16 倍数去 padding 会失败(bad decrypt)。
+    // 关闭自动 padding,手动按明文格式解析(random+msg_len+msg+receiveid)。
+    decipher.setAutoPadding(false);
     const decrypted = Buffer.concat([decipher.update(encrypted), decipher.final()]);
-    // 明文格式:random(16) + msg_len(4) + msg + receiveid
+    // 明文格式:random(16) + msg_len(4,大端) + msg + receiveid(智能机器人场景为空)
     const msgLen = decrypted.readUInt32BE(16);
     const msg = decrypted.subarray(20, 20 + msgLen);
     return msg.toString("utf8");
