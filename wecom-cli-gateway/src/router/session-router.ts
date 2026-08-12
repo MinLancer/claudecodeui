@@ -41,6 +41,10 @@ export interface RouterDeps {
   // 企微被动流式需先看到"有内容未完成"的中间帧进入流式展示,才能接受 finish=true;
   // 默认 6000 给企微一次刷新机会。测试传小值。
   clearDelayMs?: number;
+  // 正常回复完成前,内容(finish=false)到标记完成(finish=true)之间的延时(ms)。
+  // claude 一次性输出完整回复时,内容出现与完成几乎同时,企微刷不到内容帧而不认完成;
+  // 加短延时让企微刷新看到内容帧再完成。默认 3000。
+  finishDelayMs?: number;
 }
 
 export class SessionRouter {
@@ -208,6 +212,10 @@ export class SessionRouter {
 
         // 9. 流式结束:finish=true(最终内容已在循环里推送过,这里标记完成)
         const reply = finalChunks.join("").trim();
+        // 一次性输出时内容出现与完成几乎同时,企微刷不到 finish=false 内容帧而不认完成;
+        // 加短延时让企微刷新看到内容帧,再标记完成。
+        const finishDelayMs = this.deps.finishDelayMs ?? 3000;
+        await new Promise((r) => setTimeout(r, finishDelayMs));
         await this.pushStream(streamId, reply || "(空回复)", true);
         // 仅在触发过安抚(处理超 reassureSec)时才主动推送;快速完成靠被动流式已送达。
         if (reassured) await this.activePush(msg, reply);
