@@ -6,6 +6,13 @@ import type { CliType } from "../cli/types.js";
 // 全部支持的 CLI 类型:清空上下文命令会删除该用户在所有类型下的会话
 const ALL_CLI_TYPES: CliType[] = ["claude", "codex", "cursor", "opencode"];
 
+// 格式化时间戳:yyyy-MM-dd HH:mm:ss.sss
+function ts(): string {
+  const d = new Date();
+  const p = (n: number, l = 2) => String(n).padStart(l, "0");
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}.${p(d.getMilliseconds(), 3)}`;
+}
+
 // 企微智能机器人被动流式对过短内容(实证 ≈18 字符)不上屏,只显示转圈等待;较长内容(180+)能上屏。
 // 为让所有回复(状态提示、错误、短回复)都能被企微展示,短内容统一补充说明文字至安全长度。
 const MIN_DISPLAY_LEN = 200;
@@ -56,7 +63,7 @@ export class SessionRouter {
     const display = ensureDisplayable(content);
     try {
       await this.deps.store.setStreamChunk(streamId, display, finish);
-      console.log(`[router] push stream=${streamId.slice(0,12)} finish=${finish} len=${display.length}`);
+      console.log(`[${ts()}] [router] push stream=${streamId.slice(0,12)} finish=${finish} len=${display.length} content=${display.slice(-100)}`);
     } catch {
       // Redis 写失败忽略,避免影响主流程(刷新回调会拉到旧值或空)
     }
@@ -68,7 +75,7 @@ export class SessionRouter {
     if (!content || !this.deps.sendActiveReply || !msg.responseUrl) return;
     try {
       await this.deps.sendActiveReply(msg, content);
-      console.log(`[router] active-reply push len=${content.length}`);
+      console.log(`[${ts()}] [router] active-reply push len=${content.length} content=${content.slice(-100)}`);
     } catch (e) {
       console.error("[router] active-reply 失败:", (e as Error).message);
     }
@@ -177,13 +184,13 @@ export class SessionRouter {
         }, this.deps.timeoutSec * 1000);
 
         // 安抚:claude 处理超过 reassureSec 仍未完成时,推安抚消息让企微显示"请您稍后"。
-        // 仅推一次;之后若有新进度会覆盖,无新进度时企微刷新显示安抚而非干等。
+        // 企微被动流式只显示 finish=true 的内容,故安抚须 finish=true 才能上屏。
         // reassured 同时是"是否主动推送"的门槛:仅超时安抚后需主动推送兜底,快速完成靠被动流式即可。
         let reassured = false;
         const reassureSec = this.deps.reassureSec ?? 180;
         const reassureTimer = setTimeout(() => {
           reassured = true;
-          this.pushStream(streamId, "请您稍后,待我处理完成后会主动通知您。", false);
+          this.pushStream(streamId, "请您稍后,待我处理完成后会主动通知您。", true);
         }, reassureSec * 1000);
 
         try {
