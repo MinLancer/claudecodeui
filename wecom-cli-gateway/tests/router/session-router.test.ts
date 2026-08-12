@@ -48,7 +48,7 @@ describe("SessionRouter", () => {
     };
     const router = new SessionRouter({
       store, getAdapter: () => fakeAdapter as any,
-      defaultCli: "claude", projectDir: "/tmp/proj", timeoutSec: 180, isAllowed: () => true,
+      defaultCli: "claude", projectDir: "/tmp/proj", timeoutSec: 180, isAllowed: () => true, finishDelayMs: 5,
     });
     await router.handle(mkMsg(), "stream-1");
     expect(store.sessions.get("wecom_1:p2p:zhangsan:zhangsan:claude")).toBe("sid-new");
@@ -80,7 +80,7 @@ describe("SessionRouter", () => {
     const started = vi.fn();
     const router = new SessionRouter({
       store, getAdapter: () => ({ async start() { started(); return { async *send(){}, kill(){} }; } }) as any,
-      defaultCli: "claude", projectDir: "/tmp/proj", timeoutSec: 180, isAllowed: () => true,
+      defaultCli: "claude", projectDir: "/tmp/proj", timeoutSec: 180, isAllowed: () => true, finishDelayMs: 5,
     });
     await router.handle(mkMsg(), "s");
     expect(started).not.toHaveBeenCalled();
@@ -94,7 +94,7 @@ describe("SessionRouter", () => {
       store, getAdapter: () => ({
         async start(o: any) { receivedSid = o.sessionId; return { sessionId: "sid-old", async *send(){ yield {type:"final",text:"x"}; }, kill(){} }; },
       }) as any,
-      defaultCli: "claude", projectDir: "/tmp/proj", timeoutSec: 180, isAllowed: () => true,
+      defaultCli: "claude", projectDir: "/tmp/proj", timeoutSec: 180, isAllowed: () => true, finishDelayMs: 5,
     });
     await router.handle(mkMsg(), "s");
     expect(receivedSid).toBe("sid-old");
@@ -106,7 +106,7 @@ describe("SessionRouter", () => {
     const getAdapter = (t: any) => { adapterType = t; return { async start(){ return { sessionId:"sid-codex", async *send(){ yield {type:"final",text:"x"}; }, kill(){} }; } }; };
     const router = new SessionRouter({
       store, getAdapter: getAdapter as any,
-      defaultCli: "claude", projectDir: "/tmp/proj", timeoutSec: 180, cliSwitchPrefix: "@", isAllowed: () => true,
+      defaultCli: "claude", projectDir: "/tmp/proj", timeoutSec: 180, cliSwitchPrefix: "@", isAllowed: () => true, finishDelayMs: 5,
     });
     await router.handle(mkMsg({ text: "@codex 重构一下" }), "s");
     expect(adapterType).toBe("codex");
@@ -118,7 +118,7 @@ describe("SessionRouter", () => {
     const started = vi.fn();
     const router = new SessionRouter({
       store, getAdapter: () => ({ async start() { started(); return { async *send(){}, kill(){} }; } }) as any,
-      defaultCli: "claude", projectDir: "/tmp/proj", timeoutSec: 180, isAllowed: () => true,
+      defaultCli: "claude", projectDir: "/tmp/proj", timeoutSec: 180, isAllowed: () => true, finishDelayMs: 5,
     });
     await router.handle(mkMsg(), "s");
     expect(started).not.toHaveBeenCalled();
@@ -141,7 +141,7 @@ describe("SessionRouter", () => {
     };
     const router = new SessionRouter({
       store, getAdapter: () => fakeAdapter as any,
-      defaultCli: "claude", projectDir: "/tmp/proj", timeoutSec: 180, isAllowed: () => true,
+      defaultCli: "claude", projectDir: "/tmp/proj", timeoutSec: 180, isAllowed: () => true, finishDelayMs: 5,
     });
     await router.handle(mkMsg(), "stream-multi");
     // 应有 3 次推送:chunk1 "第一"(finish=false)、chunk2 "第一第二"(finish=false)、最终(finish=true)
@@ -158,7 +158,7 @@ describe("SessionRouter", () => {
     const store = fakeStore();
     const router = new SessionRouter({
       store, getAdapter: () => ({ async start(){ return { sessionId:"s", async *send(){ yield {type:"final",text:"ok"}; }, kill(){} }; } }) as any,
-      defaultCli: "claude", projectDir: "/tmp/proj", timeoutSec: 180, isAllowed: () => true,
+      defaultCli: "claude", projectDir: "/tmp/proj", timeoutSec: 180, isAllowed: () => true, finishDelayMs: 5,
     });
     await router.handle(mkMsg({ chatSceneId: "group:g1", userId: "alice", msgId: "a1" }), "sa");
     await router.handle(mkMsg({ chatSceneId: "group:g1", userId: "bob", msgId: "b1" }), "sb");
@@ -170,7 +170,7 @@ describe("SessionRouter", () => {
     const store = fakeStore();
     const router = new SessionRouter({
       store, getAdapter: () => ({ async start(){ throw new Error("boom"); } }) as any,
-      defaultCli: "claude", projectDir: "/tmp/proj", timeoutSec: 180, isAllowed: () => true,
+      defaultCli: "claude", projectDir: "/tmp/proj", timeoutSec: 180, isAllowed: () => true, finishDelayMs: 5,
     });
     await router.handle(mkMsg(), "s");
     expect(store.streamChunks[0].content).toContain("启动失败");
@@ -182,7 +182,7 @@ describe("SessionRouter", () => {
     const sendActiveReply = vi.fn(async () => {});
     const router = new SessionRouter({
       store, getAdapter: () => ({ async start(){ return { sessionId:"s", async *send(){ yield {type:"final",text:"最终结果"}; }, kill(){} }; } }) as any,
-      defaultCli: "claude", projectDir: "/tmp/proj", timeoutSec: 180, isAllowed: () => true,
+      defaultCli: "claude", projectDir: "/tmp/proj", timeoutSec: 180, isAllowed: () => true, finishDelayMs: 5,
       sendActiveReply, reassureSec: 10,
     });
     await router.handle(mkMsg({ responseUrl: "https://qyapi.weixin.qq.com/cgi-bin/aibot/response?response_code=abc" }), "stream-r");
@@ -195,7 +195,7 @@ describe("SessionRouter", () => {
     let releaseSend: (() => void) | undefined;
     const router = new SessionRouter({
       store, getAdapter: () => ({ async start(){ return { sessionId:"s", async *send(){ await new Promise<void>(r => { releaseSend = r; }); yield {type:"final",text:"最终结果"}; }, kill(){} }; } }) as any,
-      defaultCli: "claude", projectDir: "/tmp/proj", timeoutSec: 600, isAllowed: () => true,
+      defaultCli: "claude", projectDir: "/tmp/proj", timeoutSec: 600, isAllowed: () => true, finishDelayMs: 5,
       sendActiveReply, reassureSec: 1,
     });
     const done = router.handle(mkMsg({ responseUrl: "https://qyapi.weixin.qq.com/cgi-bin/aibot/response?response_code=abc" }), "stream-r");
@@ -213,7 +213,7 @@ describe("SessionRouter", () => {
     const sendActiveReply = vi.fn(async () => {});
     const router = new SessionRouter({
       store, getAdapter: () => ({ async start(){ return { sessionId:"s", async *send(){ yield {type:"final",text:"ok"}; }, kill(){} }; } }) as any,
-      defaultCli: "claude", projectDir: "/tmp/proj", timeoutSec: 180, isAllowed: () => true,
+      defaultCli: "claude", projectDir: "/tmp/proj", timeoutSec: 180, isAllowed: () => true, finishDelayMs: 5,
       sendActiveReply,
     });
     await router.handle(mkMsg(), "s");
@@ -225,7 +225,7 @@ describe("SessionRouter", () => {
     let releaseSend: (() => void) | undefined;
     const router = new SessionRouter({
       store, getAdapter: () => ({ async start(){ return { sessionId:"s", async *send(){ await new Promise<void>(r => { releaseSend = r; }); }, kill(){} }; } }) as any,
-      defaultCli: "claude", projectDir: "/tmp/proj", timeoutSec: 600, isAllowed: () => true,
+      defaultCli: "claude", projectDir: "/tmp/proj", timeoutSec: 600, isAllowed: () => true, finishDelayMs: 5,
       reassureSec: 1,
     });
     const done = router.handle(mkMsg(), "stream-r");
@@ -240,7 +240,7 @@ describe("SessionRouter", () => {
     const store = fakeStore();
     const router = new SessionRouter({
       store, getAdapter: () => ({ async start(){ return { sessionId:"s", async *send(){ yield {type:"final",text:"ok"}; }, kill(){} }; } }) as any,
-      defaultCli: "claude", projectDir: "/tmp/proj", timeoutSec: 600, isAllowed: () => true,
+      defaultCli: "claude", projectDir: "/tmp/proj", timeoutSec: 600, isAllowed: () => true, finishDelayMs: 5,
       reassureSec: 10,
     });
     await router.handle(mkMsg(), "s");
@@ -252,7 +252,7 @@ describe("SessionRouter", () => {
     const started = vi.fn();
     const router = new SessionRouter({
       store, getAdapter: () => ({ async start(){ started(); return { sessionId:"s", async *send(){}, kill(){} }; } }) as any,
-      defaultCli: "claude", projectDir: "/tmp/proj", timeoutSec: 600, isAllowed: () => true,
+      defaultCli: "claude", projectDir: "/tmp/proj", timeoutSec: 600, isAllowed: () => true, finishDelayMs: 5,
       clearDelayMs: 5,
     });
     await router.handle(mkMsg({ text: "/clear" }), "s");
@@ -274,7 +274,7 @@ describe("SessionRouter", () => {
     const started = vi.fn();
     const router = new SessionRouter({
       store, getAdapter: () => ({ async start(){ started(); return { sessionId:"s", async *send(){}, kill(){} }; } }) as any,
-      defaultCli: "claude", projectDir: "/tmp/proj", timeoutSec: 600, isAllowed: () => true,
+      defaultCli: "claude", projectDir: "/tmp/proj", timeoutSec: 600, isAllowed: () => true, finishDelayMs: 5,
       clearDelayMs: 5,
     });
     await router.handle(mkMsg({ text: "清空上下文" }), "s");
@@ -287,7 +287,7 @@ describe("SessionRouter", () => {
     const store = fakeStore();
     const router = new SessionRouter({
       store, getAdapter: () => ({ async start(){ return { sessionId:"s", async *send(){}, kill(){} }; } }) as any,
-      defaultCli: "claude", projectDir: "/tmp/proj", timeoutSec: 600, isAllowed: () => true,
+      defaultCli: "claude", projectDir: "/tmp/proj", timeoutSec: 600, isAllowed: () => true, finishDelayMs: 5,
       clearDelayMs: 5,
     });
     await router.handle(mkMsg({ text: "/clear" }), "s");
@@ -303,10 +303,33 @@ describe("SessionRouter", () => {
     const started = vi.fn();
     const router = new SessionRouter({
       store, getAdapter: () => ({ async start(){ started(); return { sessionId:"s", async *send(){ yield {type:"final",text:"ok"}; }, kill(){} }; } }) as any,
-      defaultCli: "claude", projectDir: "/tmp/proj", timeoutSec: 600, isAllowed: () => true,
+      defaultCli: "claude", projectDir: "/tmp/proj", timeoutSec: 600, isAllowed: () => true, finishDelayMs: 5,
     });
     await router.handle(mkMsg({ text: "你好" }), "s");
     expect(started).toHaveBeenCalled();
     expect(store.deletedKeys.length).toBe(0);
+  });
+
+  it("一次性输出:完成前延时(finishDelayMs),内容帧先于完成帧", async () => {
+    // 一次性输出(claude 立即给完整回复)时,若无延时,内容帧与 finish=true 几乎同时发生,
+    // 企微刷不到内容帧而不认完成。故完成前应等待 finishDelayMs(finish=true 延后)。
+    vi.useFakeTimers();
+    const store = fakeStore();
+    const router = new SessionRouter({
+      store, getAdapter: () => ({ async start(){ return { sessionId:"s", async *send(){ yield {type:"final",text:"一次性回复"}; }, kill(){} }; } }) as any,
+      defaultCli: "claude", projectDir: "/tmp/proj", timeoutSec: 600, isAllowed: () => true, finishDelayMs: 5,
+      reassureSec: 99999,
+    });
+    const done = router.handle(mkMsg(), "s");
+    // 推进微任务(不推进延时 timer):内容帧(finish=false)已推送,但完成帧尚未发生
+    await vi.advanceTimersByTimeAsync(0);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(store.streamChunks.some((f) => f.content.includes("一次性回复") && !f.finish)).toBe(true);
+    expect(store.streamChunks.some((f) => f.finish)).toBe(false);
+    // 推进过 finishDelayMs 后完成
+    await vi.advanceTimersByTimeAsync(100);
+    await done;
+    expect(store.streamChunks[store.streamChunks.length - 1].finish).toBe(true);
+    vi.useRealTimers();
   });
 });
