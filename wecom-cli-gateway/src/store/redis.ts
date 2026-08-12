@@ -31,6 +31,11 @@ export class SessionStore {
     await this.redis.hset(`session:${key}`, "sessionId", sessionId);
   }
 
+  // 删除会话(清空上下文:下次消息将开启全新会话)
+  async deleteSession(key: string): Promise<void> {
+    await this.redis.del(`session:${key}`);
+  }
+
   async tryAcquireLock(key: string, ttlSec = LOCK_TTL): Promise<boolean> {
     // 原子操作:SET key val EX ttl NX,避免 setnx+expire 两步的崩溃窗口
     const res = await this.redis.set(`lock:${key}`, "1", "EX", ttlSec, "NX");

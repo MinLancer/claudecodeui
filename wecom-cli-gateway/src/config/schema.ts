@@ -4,6 +4,13 @@ export const CliConfigSchema = z.object({
   path: z.string().default("claude"),
 });
 
+// 桥接 claudecodeui 的外部 API(自托管模式 x-api-key 认证)
+export const CcuiConfigSchema = z.object({
+  baseUrl: z.string().url(),
+  apiKey: z.string().min(1),
+  timeoutMs: z.number().int().positive().default(600000),
+});
+
 export const BotCredentialsSchema = z.record(z.string(), z.string()).default({});
 
 export const BotConfigSchema = z.object({
@@ -31,8 +38,10 @@ export const AppConfigSchema = z.object({
     codex: CliConfigSchema.optional(),
     cursor: CliConfigSchema.optional(),
     opencode: CliConfigSchema.optional(),
+    ccui: CcuiConfigSchema.optional(),
   }),
 });
 
 export type AppConfig = z.infer<typeof AppConfigSchema>;
 export type BotConfig = z.infer<typeof BotConfigSchema>;
+export type CcuiConfig = z.infer<typeof CcuiConfigSchema>;

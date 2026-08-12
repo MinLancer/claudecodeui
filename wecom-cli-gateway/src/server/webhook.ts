@@ -29,10 +29,18 @@ export function registerWebhook(app: FastifyInstance, deps: WebhookDeps) {
   app.post("/webhook/:platform/:botId", async (req, reply) => {
     const { botId, platform } = req.params as { platform: string; botId: string };
     const body = (req.body as Buffer | undefined) ?? Buffer.from("");
-    // 回调请求的 nonce(响应必须复用)
-    const nonce = pickHeader(req.headers, "nonce") ?? "";
+    // 回调请求的 nonce(响应必须复用)。企微把 nonce 放在 URL query(msg_signature&timestamp&nonce),
+    // 而非 header;仅从 header 取会取到空,导致响应 nonce 不匹配、企微拒绝显示。故优先 query,回退 header。
+    const q = req.query as Record<string, string | string[] | undefined>;
+    const nonce = (typeof q.nonce === "string" ? q.nonce : "") || pickHeader(req.headers, "nonce") || "";
 
-    const msg = await deps.parseMessage(body, req.headers, botId, platform).catch((e) => {
+    // 企微把 msg_signature/timestamp/nonce 放 URL query,合并进 headers 供 parseMessage 校验签名。
+    const combinedHeaders = { ...req.headers } as Record<string, string | string[] | undefined>;
+    for (const k of ["msg_signature", "timestamp", "nonce"] as const) {
+      const v = q[k];
+      if (v !== undefined) combinedHeaders[k] = v;
+    }
+    const msg = await deps.parseMessage(body, combinedHeaders, botId, platform).catch((e) => {
       req.log.error({ err: e }, "parseMessage 异常");
       return null;
     });
@@ -44,6 +52,7 @@ export function registerWebhook(app: FastifyInstance, deps: WebhookDeps) {
       // 流式刷新回调:msg.streamId 存在 -> 从 Redis 拉最新状态返回
       if (msg.streamId) {
         const st = await deps.getStreamState(msg.streamId);
+        req.log.info({ streamId: String(msg.streamId).slice(0, 12), found: !!st, contentLen: st?.content.length ?? 0, finish: st?.finish }, "stream-refresh");
         if (!st) {
           // stream 不存在:可能是 router 异常未初始化状态。
           // 返回空 content finish=false 让企微继续刷新(而非 finish=true 提前结束),
@@ -64,6 +73,7 @@ export function registerWebhook(app: FastifyInstance, deps: WebhookDeps) {
       if (!streamId) {
         return reply.code(200).send({ status: "success" });
       }
+      req.log.info({ streamId: String(streamId).slice(0, 12), text: msg.text?.slice(0, 20) }, "user-msg-stream");
       // 首响应:content 空,finish=false
       const resp = await deps.buildStreamResponse(streamId, "", false, nonce);
       return reply.code(200).header("content-type", "application/json").send(resp);

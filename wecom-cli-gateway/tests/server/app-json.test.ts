@@ -43,4 +43,33 @@ describe("webhook 真实 body 解析", () => {
     expect(body).not.toEqual({ status: "success" });
     expect(body.sid).toBe("sid-1");
   });
+
+  it("nonce 从 URL query 取(企微放 query 而非 header),并传给 buildStreamResponse", async () => {
+    let capturedNonce: string | undefined;
+    // 专注测 webhook 的 nonce 传递逻辑:parseMessage 直接返回消息,绕过签名校验(第一个测试已覆盖真实加解密)
+    const app = createApp({
+      parseMessage: async () => ({
+        msgId: "m9002", botId: "wecom_1", chatSceneId: "p2p:u1",
+        userId: "u1", text: "你好",
+      }),
+      handleUserMessage: async () => "sid-nonce",
+      getStreamState: async () => null,
+      buildStreamResponse: async (_sid, _content, _finish, nonce) => {
+        capturedNonce = nonce;
+        return JSON.stringify({ nonce });
+      },
+    });
+
+    const res = await app.inject({
+      method: "POST",
+      // 企微把 msg_signature/timestamp/nonce 放 URL query(而非 header)
+      url: "/webhook/wecom/wecom_1?msg_signature=abc&timestamp=123&nonce=QUERY_NONCE",
+      payload: JSON.stringify({ encrypt: "dummy" }),
+      headers: { "content-type": "application/json" },
+    });
+
+    expect(res.statusCode).toBe(200);
+    // 响应 nonce 必须与 query 一致,否则企微拒绝显示
+    expect(capturedNonce).toBe("QUERY_NONCE");
+  });
 });

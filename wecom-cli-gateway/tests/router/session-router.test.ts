@@ -7,11 +7,14 @@ import type { NormalizedMessage } from "../../src/im/types.js";
 function fakeStore(opts: { duplicate?: boolean; lockBusy?: boolean; sessions?: Map<string, string> } = {}) {
   const sessions = opts.sessions ?? new Map<string, string>();
   const streamChunks: { streamId: string; content: string; finish: boolean }[] = [];
+  const deletedKeys: string[] = [];
   return {
     sessions,
     streamChunks,
+    deletedKeys,
     async getSession(k: string) { return sessions.has(k) ? { sessionId: sessions.get(k)! } : null; },
     async setSession(k: string, sid: string) { sessions.set(k, sid); },
+    async deleteSession(k: string) { deletedKeys.push(k); },
     async tryAcquireLock() { return !opts.lockBusy; },
     async releaseLock() {},
     async isDuplicate() { return opts.duplicate ?? false; },
@@ -19,7 +22,10 @@ function fakeStore(opts: { duplicate?: boolean; lockBusy?: boolean; sessions?: M
       streamChunks.push({ streamId, content, finish });
     },
     async getStreamState() { return null; },
-  } as any as SessionStore & { streamChunks: { streamId: string; content: string; finish: boolean }[] };
+  } as any as SessionStore & {
+    streamChunks: { streamId: string; content: string; finish: boolean }[];
+    deletedKeys: string[];
+  };
 }
 
 function mkMsg(over: Partial<NormalizedMessage> = {}): NormalizedMessage {
@@ -63,7 +69,9 @@ describe("SessionRouter", () => {
     });
     await router.handle(mkMsg(), "s");
     expect(started).not.toHaveBeenCalled();
-    expect(store.streamChunks[0].content).toBe("无权限使用该机器人");
+    // 企微被动流式对过短内容不上屏,短回复须被加长到安全长度
+    expect(store.streamChunks[0].content).toContain("无权限使用该机器人");
+    expect(store.streamChunks[0].content.length).toBeGreaterThanOrEqual(200);
     expect(store.streamChunks[0].finish).toBe(true);
   });
 
@@ -114,7 +122,7 @@ describe("SessionRouter", () => {
     });
     await router.handle(mkMsg(), "s");
     expect(started).not.toHaveBeenCalled();
-    expect(store.streamChunks[0].content).toBe("消息已处理");
+    expect(store.streamChunks[0].content).toContain("消息已处理");
   });
 
   it("流式:多个 final chunk 实时推送累积内容(覆盖式)", async () => {
@@ -137,12 +145,13 @@ describe("SessionRouter", () => {
     });
     await router.handle(mkMsg(), "stream-multi");
     // 应有 3 次推送:chunk1 "第一"(finish=false)、chunk2 "第一第二"(finish=false)、最终(finish=true)
+    // 注:短内容会被 ensureDisplayable 加长,故用 includes 而非精确匹配
     const contents = store.streamChunks.map((c) => c.content);
-    expect(contents).toContain("第一");
-    expect(contents).toContain("第一第二");
+    expect(contents.some((c) => c.includes("第一"))).toBe(true);
+    expect(contents.some((c) => c.includes("第一第二"))).toBe(true);
     const last = store.streamChunks[store.streamChunks.length - 1];
     expect(last.finish).toBe(true);
-    expect(last.content).toBe("第一第二");
+    expect(last.content).toContain("第一第二");
   });
 
   it("群聊隔离:同群不同用户 Key 不同,session 各自独立", async () => {
@@ -166,5 +175,138 @@ describe("SessionRouter", () => {
     await router.handle(mkMsg(), "s");
     expect(store.streamChunks[0].content).toContain("启动失败");
     expect(store.streamChunks[0].finish).toBe(true);
+  });
+
+  it("快速完成(未触发安抚)+ responseUrl:不调用 sendActiveReply(被动流式已送达)", async () => {
+    const store = fakeStore();
+    const sendActiveReply = vi.fn(async () => {});
+    const router = new SessionRouter({
+      store, getAdapter: () => ({ async start(){ return { sessionId:"s", async *send(){ yield {type:"final",text:"最终结果"}; }, kill(){} }; } }) as any,
+      defaultCli: "claude", projectDir: "/tmp/proj", timeoutSec: 180, isAllowed: () => true,
+      sendActiveReply, reassureSec: 10,
+    });
+    await router.handle(mkMsg({ responseUrl: "https://qyapi.weixin.qq.com/cgi-bin/aibot/response?response_code=abc" }), "stream-r");
+    expect(sendActiveReply).not.toHaveBeenCalled();
+  });
+
+  it("触发安抚(超 reassureSec)后完成:调用 sendActiveReply 主动推送", async () => {
+    const store = fakeStore();
+    const sendActiveReply = vi.fn(async () => {});
+    let releaseSend: (() => void) | undefined;
+    const router = new SessionRouter({
+      store, getAdapter: () => ({ async start(){ return { sessionId:"s", async *send(){ await new Promise<void>(r => { releaseSend = r; }); yield {type:"final",text:"最终结果"}; }, kill(){} }; } }) as any,
+      defaultCli: "claude", projectDir: "/tmp/proj", timeoutSec: 600, isAllowed: () => true,
+      sendActiveReply, reassureSec: 1,
+    });
+    const done = router.handle(mkMsg({ responseUrl: "https://qyapi.weixin.qq.com/cgi-bin/aibot/response?response_code=abc" }), "stream-r");
+    await new Promise((r) => setTimeout(r, 1500)); // 触发安抚
+    releaseSend?.();
+    await done;
+    expect(sendActiveReply).toHaveBeenCalledTimes(1);
+    const [msg, content] = sendActiveReply.mock.calls[0];
+    expect(msg.responseUrl).toBe("https://qyapi.weixin.qq.com/cgi-bin/aibot/response?response_code=abc");
+    expect(content).toContain("最终结果");
+  });
+
+  it("无 responseUrl:不调用 sendActiveReply", async () => {
+    const store = fakeStore();
+    const sendActiveReply = vi.fn(async () => {});
+    const router = new SessionRouter({
+      store, getAdapter: () => ({ async start(){ return { sessionId:"s", async *send(){ yield {type:"final",text:"ok"}; }, kill(){} }; } }) as any,
+      defaultCli: "claude", projectDir: "/tmp/proj", timeoutSec: 180, isAllowed: () => true,
+      sendActiveReply,
+    });
+    await router.handle(mkMsg(), "s");
+    expect(sendActiveReply).not.toHaveBeenCalled();
+  });
+
+  it("claude 处理超过 reassureSec 时推安抚消息'请您稍后'", async () => {
+    const store = fakeStore();
+    let releaseSend: (() => void) | undefined;
+    const router = new SessionRouter({
+      store, getAdapter: () => ({ async start(){ return { sessionId:"s", async *send(){ await new Promise<void>(r => { releaseSend = r; }); }, kill(){} }; } }) as any,
+      defaultCli: "claude", projectDir: "/tmp/proj", timeoutSec: 600, isAllowed: () => true,
+      reassureSec: 1,
+    });
+    const done = router.handle(mkMsg(), "stream-r");
+    // 等待超过 reassureSec(1s),安抚应已推送
+    await new Promise((r) => setTimeout(r, 1500));
+    expect(store.streamChunks.some((c) => c.content.includes("请您稍后"))).toBe(true);
+    releaseSend?.();
+    await done;
+  });
+
+  it("claude 快速完成时不推安抚消息", async () => {
+    const store = fakeStore();
+    const router = new SessionRouter({
+      store, getAdapter: () => ({ async start(){ return { sessionId:"s", async *send(){ yield {type:"final",text:"ok"}; }, kill(){} }; } }) as any,
+      defaultCli: "claude", projectDir: "/tmp/proj", timeoutSec: 600, isAllowed: () => true,
+      reassureSec: 10,
+    });
+    await router.handle(mkMsg(), "s");
+    expect(store.streamChunks.some((c) => c.content.includes("请您稍后"))).toBe(false);
+  });
+
+  it("/clear:删除该用户所有 cliType 会话,回'上下文已清空'(finish=true),不启动 CLI", async () => {
+    const store = fakeStore({ sessions: new Map([["wecom_1:p2p:zhangsan:zhangsan:claude", "sid-old"]]) });
+    const started = vi.fn();
+    const router = new SessionRouter({
+      store, getAdapter: () => ({ async start(){ started(); return { sessionId:"s", async *send(){}, kill(){} }; } }) as any,
+      defaultCli: "claude", projectDir: "/tmp/proj", timeoutSec: 600, isAllowed: () => true,
+      clearDelayMs: 5,
+    });
+    await router.handle(mkMsg({ text: "/clear" }), "s");
+    // 4 个 cliType 的 key 都被删
+    expect(store.deletedKeys).toEqual([
+      "wecom_1:p2p:zhangsan:zhangsan:claude",
+      "wecom_1:p2p:zhangsan:zhangsan:codex",
+      "wecom_1:p2p:zhangsan:zhangsan:cursor",
+      "wecom_1:p2p:zhangsan:zhangsan:opencode",
+    ]);
+    expect(started).not.toHaveBeenCalled();
+    const last = store.streamChunks[store.streamChunks.length - 1];
+    expect(last.content).toContain("上下文已清空");
+    expect(last.finish).toBe(true);
+  });
+
+  it("中文命令'清空上下文'同样触发清空", async () => {
+    const store = fakeStore();
+    const started = vi.fn();
+    const router = new SessionRouter({
+      store, getAdapter: () => ({ async start(){ started(); return { sessionId:"s", async *send(){}, kill(){} }; } }) as any,
+      defaultCli: "claude", projectDir: "/tmp/proj", timeoutSec: 600, isAllowed: () => true,
+      clearDelayMs: 5,
+    });
+    await router.handle(mkMsg({ text: "清空上下文" }), "s");
+    expect(started).not.toHaveBeenCalled();
+    expect(store.deletedKeys.length).toBe(4);
+    expect(store.streamChunks[store.streamChunks.length - 1].content).toContain("上下文已清空");
+  });
+
+  it("/clear:先推内容(finish=false)让企微进入流式展示,再延时后标记完成(finish=true)", async () => {
+    const store = fakeStore();
+    const router = new SessionRouter({
+      store, getAdapter: () => ({ async start(){ return { sessionId:"s", async *send(){}, kill(){} }; } }) as any,
+      defaultCli: "claude", projectDir: "/tmp/proj", timeoutSec: 600, isAllowed: () => true,
+      clearDelayMs: 5,
+    });
+    await router.handle(mkMsg({ text: "/clear" }), "s");
+    // 企微被动流式要求:内容非空但 finish=false 的中间帧(进入流式展示) -> 之后 finish=true
+    const contentFrames = store.streamChunks.filter((c) => c.content.includes("上下文已清空"));
+    expect(contentFrames.length).toBeGreaterThanOrEqual(2);
+    expect(contentFrames[0].finish).toBe(false);
+    expect(contentFrames[contentFrames.length - 1].finish).toBe(true);
+  });
+
+  it("普通消息不触发清空(仍启动 CLI)", async () => {
+    const store = fakeStore();
+    const started = vi.fn();
+    const router = new SessionRouter({
+      store, getAdapter: () => ({ async start(){ started(); return { sessionId:"s", async *send(){ yield {type:"final",text:"ok"}; }, kill(){} }; } }) as any,
+      defaultCli: "claude", projectDir: "/tmp/proj", timeoutSec: 600, isAllowed: () => true,
+    });
+    await router.handle(mkMsg({ text: "你好" }), "s");
+    expect(started).toHaveBeenCalled();
+    expect(store.deletedKeys.length).toBe(0);
   });
 });
