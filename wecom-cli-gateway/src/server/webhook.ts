@@ -73,7 +73,7 @@ export function registerWebhook(app: FastifyInstance, deps: WebhookDeps) {
       if (!streamId) {
         return reply.code(200).send({ status: "success" });
       }
-      req.log.info({ streamId: String(streamId).slice(0, 12), text: msg.text?.slice(0, 20) }, "user-msg-stream");
+      req.log.info({ streamId: String(streamId).slice(0, 12), text: msg.text?.slice(0, 200) }, "user-msg-stream");
       // 首响应:content 空,finish=false
       const resp = await deps.buildStreamResponse(streamId, "", false, nonce);
       return reply.code(200).header("content-type", "application/json").send(resp);

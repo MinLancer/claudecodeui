@@ -220,7 +220,7 @@ describe("SessionRouter", () => {
     expect(sendActiveReply).not.toHaveBeenCalled();
   });
 
-  it("claude 处理超过 reassureSec 时推安抚消息'请您稍后'", async () => {
+  it("claude 处理超过 reassureSec 时推安抚消息'请您稍后'(finish=true,让企微显示)", async () => {
     const store = fakeStore();
     let releaseSend: (() => void) | undefined;
     const router = new SessionRouter({
@@ -231,7 +231,10 @@ describe("SessionRouter", () => {
     const done = router.handle(mkMsg(), "stream-r");
     // 等待超过 reassureSec(1s),安抚应已推送
     await new Promise((r) => setTimeout(r, 1500));
-    expect(store.streamChunks.some((c) => c.content.includes("请您稍后"))).toBe(true);
+    const reassureFrame = store.streamChunks.find((c) => c.content.includes("请您稍后"));
+    expect(reassureFrame).toBeTruthy();
+    // 企微被动流式只显示 finish=true 的内容,安抚须 finish=true 才能上屏
+    expect(reassureFrame!.finish).toBe(true);
     releaseSend?.();
     await done;
   });
