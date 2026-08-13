@@ -68,21 +68,48 @@ if (Test-Port $probeHost ([int]$rp)) {
   Write-Host "      REDIS_URL, or point redis.url in config.yaml to a reachable server."
 }
 
-# 2. Start claudecodeui server
-if (Test-Port "127.0.0.1" $CcuiPort) {
-  Write-Host "[2/3] Port $CcuiPort already in use, skip (assume running)"
+# 2. Build claudecodeui frontend (skip if dist is empty, or the latest git commit is older than dist)
+# Without dist/index.html the server redirects to Vite :5173; building makes :3001 serve the UI directly.
+# Rebuild also when the latest commit is newer than dist (source changed after last build).
+function Test-NeedsBuild([string]$indexHtml, [string]$repoDir) {
+  if (-not (Test-Path $indexHtml)) { return $true }        # dist empty -> build
+  $commitTime = & git -C $repoDir log -1 --format=%ct 2>$null
+  if ($LASTEXITCODE -ne 0 -or -not $commitTime) { return $false }  # no git -> keep existing dist
+  $commitUnix = [long]$commitTime
+  $distUnix = [long]((Get-Item $indexHtml).LastWriteTime - (Get-Date -Date '1970-01-01')).TotalSeconds
+  return ($distUnix -lt $commitUnix)                        # dist older than latest commit -> build
+}
+$indexHtml = Join-Path $CcuiDir "dist\index.html"
+if ($env:SKIP_CCUI_BUILD -eq "1") {
+  Write-Host "[2/4] SKIP_CCUI_BUILD=1, skip frontend build"
+} elseif (-not (Test-NeedsBuild $indexHtml $CcuiDir)) {
+  Write-Host "[2/4] claudecodeui frontend up to date, skip"
 } else {
-  Write-Host "[2/3] Starting claudecodeui server (:$CcuiPort) ..."
+  Write-Host "[2/4] Building claudecodeui frontend (npm run build:client) ..."
+  Push-Location $CcuiDir
+  npm run build:client
+  $buildCode = $LASTEXITCODE
+  Pop-Location
+  if ($buildCode -ne 0) {
+    Write-Host "      WARNING: frontend build failed; :$CcuiPort may redirect to :5173"
+  }
+}
+
+# 3. Start claudecodeui server
+if (Test-Port "127.0.0.1" $CcuiPort) {
+  Write-Host "[3/4] Port $CcuiPort already in use, skip (assume running)"
+} else {
+  Write-Host "[3/4] Starting claudecodeui server (:$CcuiPort) ..."
   $ccuiLog = Join-Path $LogDir "ccui.log"
   Start-Process -FilePath "cmd.exe" -ArgumentList "/c","cd /d `"$CcuiDir`" && npm run server:dev > `"$ccuiLog`" 2>&1" -WindowStyle Minimized
   Write-Host "      -> log: $ccuiLog"
 }
 
-# 3. Start gateway
+# 4. Start gateway
 if (Test-Port "127.0.0.1" $GatewayPort) {
-  Write-Host "[3/3] Port $GatewayPort already in use, skip (assume running)"
+  Write-Host "[4/4] Port $GatewayPort already in use, skip (assume running)"
 } else {
-  Write-Host "[3/3] Starting gateway (:$GatewayPort) ..."
+  Write-Host "[4/4] Starting gateway (:$GatewayPort) ..."
   $gwLog = Join-Path $LogDir "gateway.log"
   Start-Process -FilePath "cmd.exe" -ArgumentList "/c","cd /d `"$GatewayDir`" && npx tsx src/index.ts > `"$gwLog`" 2>&1" -WindowStyle Minimized
   Write-Host "      -> log: $gwLog"
