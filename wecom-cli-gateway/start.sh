@@ -51,20 +51,52 @@ else
   echo "      REDIS_URL, or point redis.url in config.yaml to a reachable server."
 fi
 
-# 2. Start claudecodeui server
-if port_open 127.0.0.1 "$CCUI_PORT"; then
-  echo "[2/3] Port $CCUI_PORT already in use, skip (assume running)"
+# 2. Build claudecodeui frontend (skip if dist exists and is newer than the latest git commit, or SKIP_CCUI_BUILD=1)
+# Without dist/index.html the server redirects to Vite :5173; building makes :$CCUI_PORT serve the UI directly.
+# Rebuild when dist is missing, or when the latest commit is newer than dist (source changed after last build).
+needs_build=0
+if [ ! -f "$CLAUDE_UI_DIR/dist/index.html" ]; then
+  needs_build=1
 else
-  echo "[2/3] Starting claudecodeui server (:$CCUI_PORT) ..."
+  last_commit="$(git -C "$CLAUDE_UI_DIR" log -1 --format=%ct 2>/dev/null || true)"
+  if [ -n "$last_commit" ]; then
+    if stat -c %Y "$CLAUDE_UI_DIR/dist/index.html" >/dev/null 2>&1; then
+      dist_time="$(stat -c %Y "$CLAUDE_UI_DIR/dist/index.html")"
+    else
+      dist_time="$(stat -f %m "$CLAUDE_UI_DIR/dist/index.html" 2>/dev/null || echo 0)"
+    fi
+    if [ "$dist_time" -lt "$last_commit" ]; then
+      needs_build=1
+    fi
+  fi
+fi
+if [ "${SKIP_CCUI_BUILD:-0}" = "1" ]; then
+  echo "[2/4] SKIP_CCUI_BUILD=1, skip frontend build"
+elif [ "$needs_build" = "0" ]; then
+  echo "[2/4] claudecodeui frontend up to date, skip"
+else
+  echo "[2/4] Building claudecodeui frontend (npm run build:client) ..."
+  if (cd "$CLAUDE_UI_DIR" && npm run build:client); then
+    :
+  else
+    echo "      WARNING: frontend build failed; :$CCUI_PORT may redirect to :5173"
+  fi
+fi
+
+# 3. Start claudecodeui server
+if port_open 127.0.0.1 "$CCUI_PORT"; then
+  echo "[3/4] Port $CCUI_PORT already in use, skip (assume running)"
+else
+  echo "[3/4] Starting claudecodeui server (:$CCUI_PORT) ..."
   (cd "$CLAUDE_UI_DIR" && nohup npm run server:dev >"$LOG_DIR/ccui.log" 2>&1 &)
   echo "      -> log: $LOG_DIR/ccui.log"
 fi
 
-# 3. Start gateway
+# 4. Start gateway
 if port_open 127.0.0.1 "$GATEWAY_PORT"; then
-  echo "[3/3] Port $GATEWAY_PORT already in use, skip (assume running)"
+  echo "[4/4] Port $GATEWAY_PORT already in use, skip (assume running)"
 else
-  echo "[3/3] Starting gateway (:$GATEWAY_PORT) ..."
+  echo "[4/4] Starting gateway (:$GATEWAY_PORT) ..."
   (cd "$GATEWAY_DIR" && nohup npx tsx src/index.ts >"$LOG_DIR/gateway.log" 2>&1 &)
   echo "      -> log: $LOG_DIR/gateway.log"
 fi
