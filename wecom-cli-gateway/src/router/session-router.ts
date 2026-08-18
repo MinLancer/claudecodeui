@@ -45,13 +45,12 @@ export class SessionRouter {
   constructor(private deps: RouterDeps) {}
 
   // 流式:把最新累积内容写 Redis(覆盖式),供 webhook 刷新回调拉取。
-  // 流式:把最新累积内容写 Redis(覆盖式),供 webhook 刷新回调拉取。
   private async pushStream(streamId: string, content: string, finish: boolean): Promise<void> {
     try {
       await this.deps.store.setStreamChunk(streamId, content, finish);
-      console.log(`[${ts()}] [router] push stream=${streamId.slice(0,12)} finish=${finish} len=${display.length} content=${display.slice(-100)}`);
-    } catch {
-      // Redis 写失败忽略,避免影响主流程(刷新回调会拉到旧值或空)
+      console.log(`[${ts()}] [router] push stream=${streamId.slice(0,12)} finish=${finish} len=${content.length} content=${content.slice(-100)}`);
+    } catch (e) {
+      console.error(`[${ts()}] [router] pushStream 失败:`, (e as Error).message);
     }
   }
 
@@ -204,7 +203,8 @@ export class SessionRouter {
         }
 
         // 9. 流式结束:finish=true(最终内容已在循环里推送过,这里标记完成)
-        const reply = finalChunks.join("").trim();
+        // 不 trim:trim 可能移除尾部空白,导致最终帧不包含前一帧内容,违反企微累积规则
+        const reply = finalChunks.join("");
         // 一次性输出时内容出现与完成几乎同时,企微刷不到 finish=false 内容帧而不认完成;
         // 加短延时让企微刷新看到内容帧,再标记完成。
         const finishDelayMs = this.deps.finishDelayMs ?? 3000;
