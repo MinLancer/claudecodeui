@@ -2,6 +2,7 @@ import type { NormalizedMessage } from "../im/types.js";
 import type { SessionStore } from "../store/redis.js";
 import type { CliAdapter, StreamChunk } from "../cli/types.js";
 import type { CliType } from "../cli/types.js";
+import { FIRST_REPLY_PLACEHOLDER } from "../server/webhook.js";
 
 // 全部支持的 CLI 类型:清空上下文命令会删除该用户在所有类型下的会话
 const ALL_CLI_TYPES: CliType[] = ["claude", "codex", "cursor", "opencode"];
@@ -163,7 +164,7 @@ export class SessionRouter {
         }
 
         // 7. 执行 + 超时:实时把 final chunk 累积写 Redis(流式)
-        const finalChunks: string[] = [];
+        const finalChunks: string[] = [FIRST_REPLY_PLACEHOLDER + "\n\n"];
         const exec = (async () => {
           for await (const c of session.send(text)) {
             if (c.type === "final") {
