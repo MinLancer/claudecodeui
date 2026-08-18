@@ -14,20 +14,6 @@ function ts(): string {
   return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}.${p(d.getMilliseconds(), 3)}`;
 }
 
-// 企微智能机器人被动流式对过短内容(实证 ≈18 字符)不上屏,只显示转圈等待;较长内容(180+)能上屏。
-// 为让所有回复(状态提示、错误、短回复)都能被企微展示,短内容统一补充说明文字至安全长度。
-const MIN_DISPLAY_LEN = 200;
-function ensureDisplayable(content: string): string {
-  if (content.length >= MIN_DISPLAY_LEN) return content;
-  return (
-    content +
-    "\n\n————————\n【补充说明】本回复由企微机器人网关自动生成,内容较为简短。为符合企业微信消息展示规范,系统已自动补充以下说明:\n" +
-    "1. 若为状态提示,表示相应操作已按预期处理完成或正在处理中;\n2. 若需继续操作,请直接发送具体指令,例如任务内容、需求编号、工单号、项目路径等;\n" +
-    "3. 复杂任务将在后台持续处理,处理完成后会主动推送结果给您;\n4. 如需调整操作或补充信息,请随时留言,我会继续协助您处理。\n" +
-    "————————\n感谢使用,祝工作顺利!"
-  );
-}
-
 export interface RouterDeps {
   store: SessionStore;
   getAdapter: (cliType: CliType) => CliAdapter | undefined;
@@ -59,11 +45,10 @@ export class SessionRouter {
   constructor(private deps: RouterDeps) {}
 
   // 流式:把最新累积内容写 Redis(覆盖式),供 webhook 刷新回调拉取。
-  // 短内容统一 ensureDisplayable 加长,确保企微被动流式能上屏。
+  // 流式:把最新累积内容写 Redis(覆盖式),供 webhook 刷新回调拉取。
   private async pushStream(streamId: string, content: string, finish: boolean): Promise<void> {
-    const display = ensureDisplayable(content);
     try {
-      await this.deps.store.setStreamChunk(streamId, display, finish);
+      await this.deps.store.setStreamChunk(streamId, content, finish);
       console.log(`[${ts()}] [router] push stream=${streamId.slice(0,12)} finish=${finish} len=${display.length} content=${display.slice(-100)}`);
     } catch {
       // Redis 写失败忽略,避免影响主流程(刷新回调会拉到旧值或空)
