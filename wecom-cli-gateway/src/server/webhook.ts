@@ -1,6 +1,10 @@
 import type { FastifyInstance } from "fastify";
 import type { NormalizedMessage } from "../im/types.js";
 
+// 首响应占位内容:企微智能机器人被动流式需尽快收到"非空首帧"才会进入流式展示。
+// 空 content 首响应会让企微端长时间转圈不上屏,最终超时提示"抱歉"。
+export const FIRST_REPLY_PLACEHOLDER = "收到，正在处理，请稍候…";
+
 export interface WebhookDeps {
   parseMessage: (body: Buffer, headers: object, botId: string, platform: string) => Promise<NormalizedMessage | null>;
   // 用户消息:同步初始化 stream 状态(content 空 finish=false)再启动异步执行。
@@ -74,8 +78,8 @@ export function registerWebhook(app: FastifyInstance, deps: WebhookDeps) {
         return reply.code(200).send({ status: "success" });
       }
       req.log.info({ streamId: String(streamId).slice(0, 12), text: msg.text?.slice(0, 200) }, "user-msg-stream");
-      // 首响应:content 空,finish=false
-      const resp = await deps.buildStreamResponse(streamId, "", false, nonce);
+      // 首响应:返回非空占位内容(finish=false),让企微端立即进入流式展示,避免长时间转圈超时。
+      const resp = await deps.buildStreamResponse(streamId, FIRST_REPLY_PLACEHOLDER, false, nonce);
       return reply.code(200).header("content-type", "application/json").send(resp);
     } catch (e) {
       req.log.error({ err: e }, "webhook 响应构造异常");
