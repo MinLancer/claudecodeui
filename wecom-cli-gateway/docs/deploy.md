@@ -76,6 +76,20 @@ location /webhook/ {
 - 网关 spawn claude 时复用项目配置的 skill/mcp(需求1"调用配置好的 skill、mcp、cli"自动满足)
 - 企微产生的会话可在 claudecodeui web 端只读查看
 
+## 工作目录 CLAUDE.md(企微助手环境指引)
+
+企微机器人的 `projectDir` 是 claude 的工作目录。把一份 **CLAUDE.md** 放在该目录下,企微触发会话时 **SessionStart 会自动加载**它,让 claude 自动理解环境、技能、MCP 与 devops 流程,无需每次手动说明。
+
+### 模板与部署
+
+- 模板见 [`docs/remote-claudemd.template.md`](remote-claudemd.template.md),覆盖:身份与运行方式、工作目录布局、可用 MCP、可用技能(rop-ai-kit 11 个)、完整 devops 流程(需求拆解→开发→提交登记工时→MR→部署→SQL 审核→日志排查)、企微场景行为约束、常用定位。
+- 部署位置 = 企微机器人 `projectDir`(如容器内 `/workspace/ai-workspace`)。模板内容按实际环境修改后推送到该路径即可,注意保持容器用户属主与可读权限(如 `chown hybris:1000 && chmod 644`)。
+
+### 与 auto mode 后缀的关系
+
+- `src/cli/ccui.ts` 会给每条企微消息**追加精简的 auto mode 后缀**(阻止 claude 用 `AskUserQuestion`/`ExitPlanMode` 等交互式工具卡死企微,每轮兜底)。
+- CLAUDE.md 只会在 SessionStart 加载一次、约束力较弱;两者职责互补:**后缀负责每轮强制约束,CLAUDE.md 负责环境与流程指引**。修改模板后如需让后缀与文档保持一致,同步更新 `ccui.ts` 中的 `AUTO_MODE_PROMPT`。
+
 ## 多 bot / 多 CLI
 
 - config.yaml 可配多个 bot(不同 botId),各自凭证/白名单/projectDir
