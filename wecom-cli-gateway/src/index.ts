@@ -7,6 +7,7 @@ import { buildCliAdapters } from "./cli/registry.js";
 import { realSpawnCli } from "./cli/spawn-cli.js";
 import { SessionRouter } from "./router/session-router.js";
 import { createApp } from "./server/app.js";
+import { FIRST_REPLY_PLACEHOLDER } from "./server/webhook.js";
 import { registerAdmin } from "./server/admin.js";
 import { pathToFileURL } from "node:url";
 import type { IMAdapter, NormalizedMessage } from "./im/types.js";
@@ -112,7 +113,7 @@ async function main() {
     // 同步初始化保证刷新回调来时能拿到状态(非 null),避免 claude 冷启动慢导致提前结束。
     handleUserMessage: async (msg) => {
       const streamId = msg.msgId;
-      await store.setStreamChunk(streamId, "", false); // 同步写初始状态
+      await store.setStreamChunk(streamId, FIRST_REPLY_PLACEHOLDER, false); // 同步写初始状态(非空占位,让企微端进入流式)
       const router = routers[msg.botId];
       if (router) router.handle(msg, streamId).catch((e) => console.error("router 异常:", e.message));
       return streamId;
