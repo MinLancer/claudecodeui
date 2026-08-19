@@ -52,6 +52,16 @@ export class SessionStore {
     return res === null;
   }
 
+  // 进入会话每日清空:读该用户当天是否已清空过(返回日期串,如 "2026-08-19";未清空过返回 null)
+  async getDailyClear(key: string): Promise<string | null> {
+    return this.redis.get(`dailyclear:${key}`);
+  }
+
+  // 进入会话每日清空:标记该用户当天已清空(带 TTL 防脏键长期残留,3 天足够跨日)
+  async setDailyClear(key: string, date: string): Promise<void> {
+    await this.redis.set(`dailyclear:${key}`, date, "EX", 3 * 24 * 3600);
+  }
+
   // 流式状态:覆盖式写最新 content + finish 标志(按 streamId)
   async setStreamChunk(streamId: string, content: string, finish: boolean): Promise<void> {
     const state = JSON.stringify({ content, finish });

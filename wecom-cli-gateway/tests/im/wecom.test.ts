@@ -58,6 +58,24 @@ describe("WeComAdapter", () => {
     expect(msg!.text).toBe("帮我看下"); // @RobotA 已剥离
   });
 
+  it("进入会话事件:解析 eventtype=enter_chat 为事件消息(p2p 场景,无 response_url)", async () => {
+    const { body, sig, ts, nonce } = encryptMsg({
+      msgid: "msg-enter",
+      aibotid: "bot-1",
+      from: { userid: "zhangsan" },
+      msgtype: "event",
+      event: { eventtype: "enter_chat" },
+    });
+    const adapter = new WeComAdapter({ aesKey, token }, "wecom_1");
+    const msg = await adapter.parseMessage(body, { msg_signature: sig, timestamp: ts, nonce });
+    expect(msg).not.toBeNull();
+    expect(msg!.eventType).toBe("enter_chat");
+    expect(msg!.botId).toBe("wecom_1");
+    expect(msg!.chatSceneId).toBe("p2p:zhangsan");
+    expect(msg!.userId).toBe("zhangsan");
+    expect(msg!.responseUrl).toBeUndefined();
+  });
+
   it("非 text 消息返回 null", async () => {
     const { body, sig, ts, nonce } = encryptMsg({
       msgid: "msg-3",
@@ -182,5 +200,19 @@ describe("WeComAdapter", () => {
     const crypto = new WeComCrypto({ aesKey, token });
     const inner = JSON.parse(crypto.decrypt(obj.encrypt));
     expect(inner.stream.finish).toBe(true);
+  });
+
+  it("buildTextResponse:返回加密的被动文本回复(enter_chat 欢迎语)", async () => {
+    const adapter = new WeComAdapter({ aesKey, token }, "wecom_1");
+    const resp = await adapter.buildTextResponse("欢迎使用", "nonce-abc");
+    const obj = JSON.parse(resp);
+    expect(obj.encrypt).toBeTruthy();
+    expect(obj.nonce).toBe("nonce-abc"); // 复用请求 nonce
+
+    const crypto = new WeComCrypto({ aesKey, token });
+    const inner = JSON.parse(crypto.decrypt(obj.encrypt));
+    expect(inner.msgtype).toBe("text");
+    expect(inner.text.content).toBe("欢迎使用");
+    expect(crypto.verifySign(obj.timestamp, obj.nonce, obj.encrypt, obj.msgsignature)).toBe(true);
   });
 });

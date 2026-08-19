@@ -14,6 +14,10 @@ export interface WebhookDeps {
   getStreamState: (streamId: string) => Promise<{ content: string; finish: boolean } | null>;
   // 构造流式加密响应体(由 IMAdapter 提供)
   buildStreamResponse: (streamId: string, content: string, finish: boolean, requestNonce: string) => Promise<string>;
+  // 事件回调(如 enter_chat):返回要被动文本回复的内容,返回 null 表示不回复(如当天已清空过)。
+  handleEvent?: (msg: any) => Promise<string | null>;
+  // 构造被动文本回复的加密响应体(由 IMAdapter 提供,仅进入会话事件支持)
+  buildTextResponse?: (content: string, requestNonce: string) => Promise<string>;
   // GET 验证 URL
   verifyUrl?: (query: Record<string, string>, botId: string, platform: string) => Promise<string | null>;
 }
@@ -65,6 +69,25 @@ export function registerWebhook(app: FastifyInstance, deps: WebhookDeps) {
           return reply.code(200).header("content-type", "application/json").send(resp);
         }
         const resp = await deps.buildStreamResponse(msg.streamId, st.content, st.finish, nonce);
+        return reply.code(200).header("content-type", "application/json").send(resp);
+      }
+
+      // 事件回调(如 enter_chat):清空上下文 + 被动文本回复欢迎语。
+      // 事件无 streamId,也不走 CLI 会话,故在用户消息分支前单独处理。
+      if (msg.eventType) {
+        if (!deps.handleEvent || !deps.buildTextResponse) {
+          return reply.code(200).send({ status: "success" });
+        }
+        const content = await deps.handleEvent(msg).catch((e) => {
+          req.log.error({ err: e }, "handleEvent 异常");
+          return null;
+        });
+        if (!content) {
+          // 无回复内容(如当天已清空过),空回 success
+          return reply.code(200).send({ status: "success" });
+        }
+        const resp = await deps.buildTextResponse(content, nonce);
+        req.log.info({ botId: msg.botId, eventType: msg.eventType, contentLen: content.length }, "event-reply");
         return reply.code(200).header("content-type", "application/json").send(resp);
       }
 

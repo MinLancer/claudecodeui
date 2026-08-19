@@ -39,6 +39,20 @@ export interface RouterDeps {
   // claude 一次性输出完整回复时,内容出现与完成几乎同时,企微刷不到内容帧而不认完成;
   // 加短延时让企微刷新看到内容帧再完成。默认 3000。
   finishDelayMs?: number;
+  // 进入会话(enter_chat)欢迎语:用户当天首次进入时被动文本回复的文案。
+  // 不填用默认文案 DEFAULT_ENTER_GREETING。
+  enterGreeting?: string;
+}
+
+// 进入会话(enter_chat)欢迎语默认文案
+export const DEFAULT_ENTER_GREETING =
+  "今天本大虾继续勉为其难的为你服务吧！用久了记得手动/clear ,不然你给我token";
+
+// 当日日期串:yyyy-MM-dd(用于"当天首次进入会话"的判定)
+function todayStr(): string {
+  const d = new Date();
+  const p = (n: number) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
 }
 
 export class SessionRouter {
@@ -64,6 +78,21 @@ export class SessionRouter {
     } catch (e) {
       console.error("[router] active-reply 失败:", (e as Error).message);
     }
+  }
+
+  // 进入会话事件(enter_chat):用户当天首次进入时清空上下文并返回欢迎语。
+  // 企微每天每用户仅推送一次进入会话事件,这里仍按"当天首次"做双保险:
+  // 当天已清空过则不再回复(返回 null)。清空范围与 /clear 一致(全部 cliType)。
+  // 注意:事件处理不校验白名单(按要求对进入用户一律清理+回复)。
+  async handleEnterChat(msg: NormalizedMessage): Promise<string | null> {
+    const date = todayStr();
+    const clearKey = `${msg.botId}:${msg.chatSceneId}:${msg.userId}`;
+    if ((await this.deps.store.getDailyClear(clearKey)) === date) return null;
+    for (const t of ALL_CLI_TYPES) {
+      await this.deps.store.deleteSession(`${msg.botId}:${msg.chatSceneId}:${msg.userId}:${t}`);
+    }
+    await this.deps.store.setDailyClear(clearKey, date);
+    return this.deps.enterGreeting ?? DEFAULT_ENTER_GREETING;
   }
 
   async handle(msg: NormalizedMessage, streamId: string): Promise<void> {
