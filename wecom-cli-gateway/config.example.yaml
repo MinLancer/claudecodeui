@@ -18,6 +18,7 @@ bots:
       aesKey: "your-43-char-encoding-aes-key"  # 43 字符 EncodingAESKey
       token: "your-token"                        # 回调签名校验 Token
     # cliSwitchPrefix: "@"         # 可选,开启后支持 @codex 等切换
+    # enterGreeting: "欢迎使用!"  # 可选,进入会话欢迎语(用户当天首次进入时回复并清空上下文);不填用默认文案
 
   # 以下为预留,本期不实现
   # - id: dingtalk_1

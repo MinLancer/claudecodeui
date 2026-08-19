@@ -22,6 +22,8 @@ export const BotConfigSchema = z.object({
   allowedUsers: z.array(z.string()).default([]),
   credentials: BotCredentialsSchema,
   cliSwitchPrefix: z.string().optional(),
+  // 进入会话(enter_chat)欢迎语:用户当天首次进入单聊时被动文本回复。不填用默认文案。
+  enterGreeting: z.string().optional(),
 });
 
 export const AppConfigSchema = z.object({

@@ -98,6 +98,8 @@ async function main() {
         if (!adapter) return;
         await adapter.sendMessage({ toUser: msg.userId, text: content, responseUrl: msg.responseUrl });
       },
+      // 进入会话欢迎语:可配置,不填用默认文案
+      enterGreeting: bot.enterGreeting,
     });
     routers[bot.id] = router;
   }
@@ -117,6 +119,18 @@ async function main() {
       const router = routers[msg.botId];
       if (router) router.handle(msg, streamId).catch((e) => console.error("router 异常:", e.message));
       return streamId;
+    },
+    // 事件回调(enter_chat):清空上下文并返回欢迎语(由对应 bot 的 router 处理)
+    handleEvent: async (msg) => {
+      const router = routers[msg.botId];
+      if (!router) return null;
+      return router.handleEnterChat(msg);
+    },
+    // 构造被动文本回复的加密响应(由 IMAdapter 提供,仅进入会话事件用)
+    buildTextResponse: async (content, nonce) => {
+      const adapter = Object.values(imAdapters)[0];
+      if (!adapter || typeof adapter.buildTextResponse !== "function") throw new Error("无文本回复能力");
+      return adapter.buildTextResponse(content, nonce);
     },
     // 流式刷新回调:从 Redis 拉 stream 状态
     getStreamState: async (streamId) => store.getStreamState(streamId),

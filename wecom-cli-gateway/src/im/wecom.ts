@@ -70,6 +70,20 @@ export class WeComAdapter implements IMAdapter {
       };
     }
 
+    // 5a2. 进入会话事件:用户当天首次进入单聊(无 response_url/chatid,无文本)。
+    // webhook 据此清空上下文 + 被动文本回复欢迎语,而非启动 CLI 会话。
+    if (m.msgtype === "event" && m.event?.eventtype === "enter_chat") {
+      const userId = String(m.from?.userid ?? "");
+      return {
+        botId: this.botId,
+        msgId: String(m.msgid ?? ""),
+        chatSceneId: `p2p:${userId}`,
+        userId,
+        text: "",
+        eventType: "enter_chat",
+      };
+    }
+
     // 5b. 用户文本消息(其他类型图片/语音等本期忽略)
     if (m.msgtype !== "text") return null;
 
@@ -108,6 +122,21 @@ export class WeComAdapter implements IMAdapter {
         content,
         finish,
       },
+    };
+    const encrypt = this.crypto.encrypt(JSON.stringify(inner));
+    const timestamp = Math.floor(Date.now() / 1000).toString();
+    const msgsignature = this.crypto.sign(timestamp, requestNonce, encrypt);
+    return JSON.stringify({ encrypt, msgsignature, timestamp, nonce: requestNonce });
+  }
+
+  /**
+   * 构造被动文本回复的加密响应体(仅进入会话事件支持文本被动回复)。
+   * 内部结构:{msgtype:"text", text:{content}},外包标准加密签名,nonce 复用回调请求的 nonce。
+   */
+  async buildTextResponse(content: string, requestNonce: string): Promise<string> {
+    const inner = {
+      msgtype: "text" as const,
+      text: { content },
     };
     const encrypt = this.crypto.encrypt(JSON.stringify(inner));
     const timestamp = Math.floor(Date.now() / 1000).toString();

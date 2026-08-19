@@ -6,6 +6,8 @@ export interface AppDeps {
   handleUserMessage: (msg: any) => Promise<string | null>;
   getStreamState: (streamId: string) => Promise<{ content: string; finish: boolean } | null>;
   buildStreamResponse: (streamId: string, content: string, finish: boolean, requestNonce: string) => Promise<string>;
+  handleEvent?: (msg: any) => Promise<string | null>;
+  buildTextResponse?: (content: string, requestNonce: string) => Promise<string>;
   verifyUrl?: (query: Record<string, string>, botId: string, platform: string) => Promise<string | null>;
 }
 

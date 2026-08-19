@@ -8,10 +8,12 @@ function fakeStore(opts: { duplicate?: boolean; lockBusy?: boolean; sessions?: M
   const sessions = opts.sessions ?? new Map<string, string>();
   const streamChunks: { streamId: string; content: string; finish: boolean }[] = [];
   const deletedKeys: string[] = [];
+  const dailyClear = new Map<string, string>();
   return {
     sessions,
     streamChunks,
     deletedKeys,
+    dailyClear,
     async getSession(k: string) { return sessions.has(k) ? { sessionId: sessions.get(k)! } : null; },
     async setSession(k: string, sid: string) { sessions.set(k, sid); },
     async deleteSession(k: string) { deletedKeys.push(k); },
@@ -22,9 +24,12 @@ function fakeStore(opts: { duplicate?: boolean; lockBusy?: boolean; sessions?: M
       streamChunks.push({ streamId, content, finish });
     },
     async getStreamState() { return null; },
+    async getDailyClear(k: string) { return dailyClear.has(k) ? dailyClear.get(k)! : null; },
+    async setDailyClear(k: string, date: string) { dailyClear.set(k, date); },
   } as any as SessionStore & {
     streamChunks: { streamId: string; content: string; finish: boolean }[];
     deletedKeys: string[];
+    dailyClear: Map<string, string>;
   };
 }
 
@@ -299,6 +304,38 @@ describe("SessionRouter", () => {
     expect(contentFrames.length).toBeGreaterThanOrEqual(2);
     expect(contentFrames[0].finish).toBe(false);
     expect(contentFrames[contentFrames.length - 1].finish).toBe(true);
+  });
+
+  it("进入会话(enter_chat):当天首次清空全部 cliType 会话并返回默认欢迎语", async () => {
+    const store = fakeStore({ sessions: new Map([["wecom_1:p2p:zhangsan:zhangsan:claude", "sid-old"]]) });
+    const router = new SessionRouter({
+      store, getAdapter: () => ({ async start(){ return { sessionId:"s", async *send(){}, kill(){} }; } }) as any,
+      defaultCli: "claude", projectDir: "/tmp/proj", timeoutSec: 600, isAllowed: () => true, finishDelayMs: 5,
+    });
+    const greeting = await router.handleEnterChat(mkMsg({ eventType: "enter_chat", text: "" }));
+    expect(greeting).toContain("今天本大虾");
+    // 4 个 cliType 的 key 都被删(与 /clear 一致)
+    expect(store.deletedKeys).toEqual([
+      "wecom_1:p2p:zhangsan:zhangsan:claude",
+      "wecom_1:p2p:zhangsan:zhangsan:codex",
+      "wecom_1:p2p:zhangsan:zhangsan:cursor",
+      "wecom_1:p2p:zhangsan:zhangsan:opencode",
+    ]);
+    // 当天再次进入不再清空、不再回复
+    const second = await router.handleEnterChat(mkMsg({ eventType: "enter_chat", text: "", msgId: "m2" }));
+    expect(second).toBeNull();
+    expect(store.deletedKeys.length).toBe(4);
+  });
+
+  it("进入会话(enter_chat):配置 enterGreeting 时返回自定义欢迎语", async () => {
+    const store = fakeStore();
+    const router = new SessionRouter({
+      store, getAdapter: () => ({ async start(){ return { sessionId:"s", async *send(){}, kill(){} }; } }) as any,
+      defaultCli: "claude", projectDir: "/tmp/proj", timeoutSec: 600, isAllowed: () => true, finishDelayMs: 5,
+      enterGreeting: "欢迎使用!",
+    });
+    const greeting = await router.handleEnterChat(mkMsg({ eventType: "enter_chat", text: "" }));
+    expect(greeting).toBe("欢迎使用!");
   });
 
   it("普通消息不触发清空(仍启动 CLI)", async () => {
