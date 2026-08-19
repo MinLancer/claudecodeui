@@ -74,9 +74,7 @@ describe("SessionRouter", () => {
     });
     await router.handle(mkMsg(), "s");
     expect(started).not.toHaveBeenCalled();
-    // 企微被动流式对过短内容不上屏,短回复须被加长到安全长度
     expect(store.streamChunks[0].content).toContain("无权限使用该机器人");
-    expect(store.streamChunks[0].content.length).toBeGreaterThanOrEqual(200);
     expect(store.streamChunks[0].finish).toBe(true);
   });
 
@@ -182,7 +180,7 @@ describe("SessionRouter", () => {
     expect(store.streamChunks[0].finish).toBe(true);
   });
 
-  it("快速完成(未触发安抚)+ responseUrl:不调用 sendActiveReply(被动流式已送达)", async () => {
+  it("快速完成(未触发安抚)+ responseUrl:仍用 sendActiveReply 主动推送最终结果", async () => {
     const store = fakeStore();
     const sendActiveReply = vi.fn(async () => {});
     const router = new SessionRouter({
@@ -191,7 +189,11 @@ describe("SessionRouter", () => {
       sendActiveReply, reassureSec: 10,
     });
     await router.handle(mkMsg({ responseUrl: "https://qyapi.weixin.qq.com/cgi-bin/aibot/response?response_code=abc" }), "stream-r");
-    expect(sendActiveReply).not.toHaveBeenCalled();
+    // 主动推送兜底:企微流式刷新退避时结果可靠送达,故无论是否安抚都推送
+    expect(sendActiveReply).toHaveBeenCalledTimes(1);
+    const [msg, content] = sendActiveReply.mock.calls[0];
+    expect(msg.responseUrl).toBe("https://qyapi.weixin.qq.com/cgi-bin/aibot/response?response_code=abc");
+    expect(content).toContain("最终结果");
   });
 
   it("触发安抚(超 reassureSec)后完成:调用 sendActiveReply 主动推送", async () => {

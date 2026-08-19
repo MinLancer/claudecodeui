@@ -1,5 +1,6 @@
 import { describe, it, expect, vi } from "vitest";
 import { createApp } from "../../src/server/app.js";
+import { FIRST_REPLY_PLACEHOLDER } from "../../src/server/webhook.js";
 
 // 辅助:构造一个带所有流式依赖的 app
 function makeApp(overrides: Partial<{
@@ -44,7 +45,8 @@ describe("webhook", () => {
     expect(res.statusCode).toBe(200);
     const body = JSON.parse(res.body);
     expect(body.finish).toBe(false); // 首响应 finish=false
-    expect(body.content).toBe(""); // 首响应 content 空
+    // 首响应返回非空占位内容,让企微端立即进入流式展示(避免空首帧长时间转圈超时)
+    expect(body.content).toBe(FIRST_REPLY_PLACEHOLDER);
     expect(handleUserMessage).toHaveBeenCalled(); // 同步触发(含初始化)
     expect(buildStreamResponse).toHaveBeenCalled();
   });
