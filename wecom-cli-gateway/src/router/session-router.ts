@@ -23,8 +23,8 @@ export interface RouterDeps {
   cliSwitchPrefix?: string;
   // 白名单判断:由 bot 配置注入
   isAllowed: (userId: string) => boolean;
-  // 主动回复回调:claude 完成后,若消息携带 responseUrl(企微),用其主动推送最终结果。
-  // 用于兜底——企微流式刷新可能因 claude 处理过慢而超时,response_url(1h 有效)保证结果送达。
+  // 主动回复回调:claude 完成后,用 response_url(企微 1h 有效)主动推送最终结果。
+  // 用于兜底——企微流式刷新间隔会随时间指数退避,主动推送保证结果可靠送达。
   sendActiveReply?: (msg: NormalizedMessage, content: string) => Promise<void>;
   // 安抚触发秒数:claude 处理超过此值仍未完成时,推一条安抚消息"请您稍后..."让企微显示,
   // 避免用户在企微流式刷新窗口内长时间看不到反馈。默认 180。
@@ -193,7 +193,7 @@ export class SessionRouter {
         if (timedOut) {
           const timedOutReply = finalChunks.join("") || "⏱ 处理超时,已终止";
           await this.pushStream(streamId, timedOutReply, true);
-          if (reassured) await this.activePush(msg, timedOutReply);
+          await this.activePush(msg, timedOutReply);
           return;
         }
 
@@ -210,8 +210,10 @@ export class SessionRouter {
         const finishDelayMs = this.deps.finishDelayMs ?? 3000;
         await new Promise((r) => setTimeout(r, finishDelayMs));
         await this.pushStream(streamId, reply || "(空回复)", true);
-        // 仅在触发过安抚(处理超 reassureSec)时才主动推送;快速完成靠被动流式已送达。
-        if (reassured) await this.activePush(msg, reply);
+        // 始终主动推送兜底:企微被动流式刷新间隔会随时间指数退避(1s→4s→8s→16s→32s),
+        // cc 处理有长暂停时,最终内容可能因退避延迟送达导致 client 超时。response_url 1h 有效,
+        // 主动推送保证最终结果可靠送达。
+        await this.activePush(msg, reply);
       } finally {
         await this.deps.store.releaseLock(key);
       }
