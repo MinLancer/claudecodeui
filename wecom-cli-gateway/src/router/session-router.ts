@@ -205,6 +205,7 @@ export class SessionRouter {
 
         // 7. 取已有 session
         const existing = await this.deps.store.getSession(key);
+        console.log(`[${ts()}] [router] get-session key=${key} sessionId=${existing?.sessionId ?? "无(将新建)"}`);
 
         let session;
         try {
@@ -276,8 +277,10 @@ export class SessionRouter {
         }
 
         // 10. 回写 session
+        console.log(`[${ts()}] [router] session 结束 cliTarget sessionId=${session.sessionId ?? "无"} 是否回写=${Boolean(session.sessionId && session.sessionId !== existing?.sessionId)}`);
         if (session.sessionId && session.sessionId !== existing?.sessionId) {
           await this.deps.store.setSession(key, session.sessionId);
+          console.log(`[${ts()}] [router] set-session key=${key} sessionId=${session.sessionId}`);
         }
 
         // 11. 流式结束:finish=true(最终内容已在循环里推送过,这里标记完成)
