@@ -50,6 +50,7 @@ export class CcuiSession implements CliSession {
         const ev = event as Record<string, unknown>;
         if (ev.type === "session-id" && typeof ev.sessionId === "string") {
           this.sessionId = ev.sessionId as string;
+          console.log(`[ccui] 捕获上游 session-id provider=${this.opts.provider} projectDir=${this.opts.projectDir} sessionId=${ev.sessionId}`);
           continue;
         }
         if (ev.type === "error") {
