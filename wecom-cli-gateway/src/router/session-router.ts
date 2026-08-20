@@ -59,12 +59,12 @@ export class SessionRouter {
   constructor(private deps: RouterDeps) {}
 
   // 流式:把最新累积内容写 Redis(覆盖式),供 webhook 刷新回调拉取。
-  private async pushStream(streamId: string, content: string, finish: boolean): Promise<void> {
+  private async pushStream(streamId: string, content: string, finish: boolean, userId = ""): Promise<void> {
     try {
       await this.deps.store.setStreamChunk(streamId, content, finish);
-      console.log(`[${ts()}] [router] push stream=${streamId.slice(0,12)} finish=${finish} len=${content.length} content=${content.slice(-100)}`);
+      console.log(`[${ts()}] [router] push stream=${streamId.slice(0,12)} user=${userId} finish=${finish} len=${content.length} content=${content.slice(-100)}`);
     } catch (e) {
-      console.error(`[${ts()}] [router] pushStream 失败:`, (e as Error).message);
+      console.error(`[${ts()}] [router] pushStream 失败 user=${userId}:`, (e as Error).message);
     }
   }
 
@@ -74,9 +74,9 @@ export class SessionRouter {
     if (!content || !this.deps.sendActiveReply || !msg.responseUrl) return;
     try {
       await this.deps.sendActiveReply(msg, content);
-      console.log(`[${ts()}] [router] active-reply push len=${content.length} content=${content.slice(-100)}`);
+      console.log(`[${ts()}] [router] active-reply push user=${msg.userId} len=${content.length} content=${content.slice(-100)}`);
     } catch (e) {
-      console.error("[router] active-reply 失败:", (e as Error).message);
+      console.error(`[router] active-reply 失败 user=${msg.userId}:`, (e as Error).message);
     }
   }
 
@@ -87,25 +87,33 @@ export class SessionRouter {
   async handleEnterChat(msg: NormalizedMessage): Promise<string | null> {
     const date = todayStr();
     const clearKey = `${msg.botId}:${msg.chatSceneId}:${msg.userId}`;
-    if ((await this.deps.store.getDailyClear(clearKey)) === date) return null;
+    if ((await this.deps.store.getDailyClear(clearKey)) === date) {
+      console.log(`[${ts()}] [router] enter_chat 当天已清空过,跳过清空与回复 bot=${msg.botId} scene=${msg.chatSceneId} user=${msg.userId}`);
+      return null;
+    }
+    // 用户当天首次进入会话事件:记录并开始清空上下文
+    console.log(`[${ts()}] [router] enter_chat 首次进入,开始清空上下文 bot=${msg.botId} scene=${msg.chatSceneId} user=${msg.userId} date=${date}`);
     for (const t of ALL_CLI_TYPES) {
       await this.deps.store.deleteSession(`${msg.botId}:${msg.chatSceneId}:${msg.userId}:${t}`);
     }
+    console.log(`[${ts()}] [router] enter_chat 会话清理成功,已清空全部 cliType user=${msg.userId}`);
     await this.deps.store.setDailyClear(clearKey, date);
-    return this.deps.enterGreeting ?? DEFAULT_ENTER_GREETING;
+    const greeting = this.deps.enterGreeting ?? DEFAULT_ENTER_GREETING;
+    console.log(`[${ts()}] [router] enter_chat 返回欢迎语 user=${msg.userId} len=${greeting.length} content=${greeting}`);
+    return greeting;
   }
 
   async handle(msg: NormalizedMessage, streamId: string): Promise<void> {
     try {
       // 1. 白名单
       if (!this.deps.isAllowed(msg.userId)) {
-        await this.pushStream(streamId, "无权限使用该机器人", true);
+        await this.pushStream(streamId, "无权限使用该机器人", true, msg.userId);
         return;
       }
 
       // 2. 去重
       if (await this.deps.store.isDuplicate(msg.msgId)) {
-        await this.pushStream(streamId, "消息已处理", true);
+        await this.pushStream(streamId, "消息已处理", true, msg.userId);
         return;
       }
 
@@ -132,7 +140,7 @@ export class SessionRouter {
 
       // 5. 锁
       if (!(await this.deps.store.tryAcquireLock(key))) {
-        await this.pushStream(streamId, "⏳ 上一条还在处理中,稍后再试", true);
+        await this.pushStream(streamId, "⏳ 上一条还在处理中,稍后再试", true, msg.userId);
         return;
       }
 
@@ -153,15 +161,15 @@ export class SessionRouter {
           // 企微被动流式是累积式,若首响应(空)后直接 finish=true,企微缺"有内容未完成"的
           // 中间帧而不认这次完成,会持续刷新等待。clearDelayMs 给企微一次刷新机会。
           const clearDelayMs = this.deps.clearDelayMs ?? 6000;
-          await this.pushStream(streamId, clearMsg, false);
+          await this.pushStream(streamId, clearMsg, false, msg.userId);
           await new Promise((r) => setTimeout(r, clearDelayMs));
-          await this.pushStream(streamId, clearMsg, true);
+          await this.pushStream(streamId, clearMsg, true, msg.userId);
           return;
         }
 
         const adapter = this.deps.getAdapter(cliType);
         if (!adapter) {
-          await this.pushStream(streamId, `⚠️ ${cliType} 未配置或未实现`, true);
+          await this.pushStream(streamId, `⚠️ ${cliType} 未配置或未实现`, true, msg.userId);
           return;
         }
 
@@ -172,7 +180,7 @@ export class SessionRouter {
         try {
           session = await adapter.start({ projectDir: this.deps.projectDir, sessionId: existing?.sessionId });
         } catch {
-          await this.pushStream(streamId, "⚠️ claude 启动失败,请联系管理员", true);
+          await this.pushStream(streamId, "⚠️ claude 启动失败,请联系管理员", true, msg.userId);
           return;
         }
 
@@ -183,10 +191,10 @@ export class SessionRouter {
             if (c.type === "final") {
               finalChunks.push(c.text);
               // 实时推送当前累积内容(覆盖式),finish=false
-              await this.pushStream(streamId, finalChunks.join(""), false);
+              await this.pushStream(streamId, finalChunks.join(""), false, msg.userId);
             } else if (c.type === "error") {
               finalChunks.push(c.text);
-              await this.pushStream(streamId, finalChunks.join(""), false);
+              await this.pushStream(streamId, finalChunks.join(""), false, msg.userId);
             }
           }
         })();
@@ -204,14 +212,14 @@ export class SessionRouter {
         const reassureSec = this.deps.reassureSec ?? 180;
         const reassureTimer = setTimeout(() => {
           reassured = true;
-          this.pushStream(streamId, "请您稍后,待我处理完成后会主动通知您。", true);
+          this.pushStream(streamId, "请您稍后,待我处理完成后会主动通知您。", true, msg.userId);
         }, reassureSec * 1000);
 
         try {
           await exec;
         } catch {
           if (!timedOut) {
-            await this.pushStream(streamId, finalChunks.join("") || "⚠️ 处理失败,请重试", true);
+            await this.pushStream(streamId, finalChunks.join("") || "⚠️ 处理失败,请重试", true, msg.userId);
           }
         } finally {
           clearTimeout(timer);
@@ -221,7 +229,7 @@ export class SessionRouter {
 
         if (timedOut) {
           const timedOutReply = finalChunks.join("") || "⏱ 处理超时,已终止";
-          await this.pushStream(streamId, timedOutReply, true);
+          await this.pushStream(streamId, timedOutReply, true, msg.userId);
           await this.activePush(msg, timedOutReply);
           return;
         }
@@ -238,7 +246,7 @@ export class SessionRouter {
         // 加短延时让企微刷新看到内容帧,再标记完成。
         const finishDelayMs = this.deps.finishDelayMs ?? 3000;
         await new Promise((r) => setTimeout(r, finishDelayMs));
-        await this.pushStream(streamId, reply || "(空回复)", true);
+        await this.pushStream(streamId, reply || "(空回复)", true, msg.userId);
         // 始终主动推送兜底:企微被动流式刷新间隔会随时间指数退避(1s→4s→8s→16s→32s),
         // cc 处理有长暂停时,最终内容可能因退避延迟送达导致 client 超时。response_url 1h 有效,
         // 主动推送保证最终结果可靠送达。
@@ -248,7 +256,7 @@ export class SessionRouter {
       }
     } catch {
       // 最外层兜底:Redis 不可达等
-      await this.pushStream(streamId, "⚠️ 服务暂时不可用", true);
+      await this.pushStream(streamId, "⚠️ 服务暂时不可用", true, msg.userId);
     }
   }
 }

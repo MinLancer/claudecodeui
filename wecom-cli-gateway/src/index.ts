@@ -10,6 +10,8 @@ import { createApp } from "./server/app.js";
 import { FIRST_REPLY_PLACEHOLDER } from "./server/webhook.js";
 import { registerAdmin } from "./server/admin.js";
 import { pathToFileURL } from "node:url";
+import path from "node:path";
+import { DailyRotateStream } from "./log-rotate.js";
 import type { IMAdapter, NormalizedMessage } from "./im/types.js";
 import type { CliAdapter, CliType } from "./cli/types.js";
 import type { QueryFn } from "./cli/claude.js";
@@ -54,6 +56,13 @@ async function loadCodexRun(): Promise<any> {
 }
 
 async function main() {
+  // 按天滚动日志:把进程 stdout/stderr(含 console.log + fastify/pino JSON)
+  // 全部导向 logs/gateway-YYYY-MM-DD.log,跨天自动切换。LOG_DIR 可覆盖,默认 cwd/logs。
+  const logDir = process.env.LOG_DIR || path.resolve(process.cwd(), "logs");
+  const gatewayLog = new DailyRotateStream(logDir, "gateway");
+  process.stdout.write = gatewayLog.write.bind(gatewayLog);
+  process.stderr.write = gatewayLog.write.bind(gatewayLog);
+
   const cfg = loadConfig(process.env.CONFIG_PATH ?? "config.yaml");
   const redis = createRedis(cfg.redis.url);
   const store = new SessionStore(redis as any);
@@ -117,7 +126,7 @@ async function main() {
       const streamId = msg.msgId;
       await store.setStreamChunk(streamId, FIRST_REPLY_PLACEHOLDER, false); // 同步写初始状态(非空占位,让企微端进入流式)
       const router = routers[msg.botId];
-      if (router) router.handle(msg, streamId).catch((e) => console.error("router 异常:", e.message));
+      if (router) router.handle(msg, streamId).catch((e) => console.error(`router 异常 user=${msg.userId}:`, e.message));
       return streamId;
     },
     // 事件回调(enter_chat):清空上下文并返回欢迎语(由对应 bot 的 router 处理)
