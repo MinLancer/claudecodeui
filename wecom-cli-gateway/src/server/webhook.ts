@@ -60,7 +60,7 @@ export function registerWebhook(app: FastifyInstance, deps: WebhookDeps) {
       // 流式刷新回调:msg.streamId 存在 -> 从 Redis 拉最新状态返回
       if (msg.streamId) {
         const st = await deps.getStreamState(msg.streamId);
-        req.log.info({ streamId: String(msg.streamId).slice(0, 12), found: !!st, contentLen: st?.content.length ?? 0, finish: st?.finish }, "stream-refresh");
+        req.log.info({ userId: msg.userId, streamId: String(msg.streamId).slice(0, 12), found: !!st, contentLen: st?.content.length ?? 0, finish: st?.finish }, "stream-refresh");
         if (!st) {
           // stream 不存在:可能是 router 异常未初始化状态。
           // 返回空 content finish=false 让企微继续刷新(而非 finish=true 提前结束),
@@ -79,7 +79,7 @@ export function registerWebhook(app: FastifyInstance, deps: WebhookDeps) {
           return reply.code(200).send({ status: "success" });
         }
         const content = await deps.handleEvent(msg).catch((e) => {
-          req.log.error({ err: e }, "handleEvent 异常");
+          req.log.error({ err: e, userId: msg.userId }, "handleEvent 异常");
           return null;
         });
         if (!content) {
@@ -87,25 +87,25 @@ export function registerWebhook(app: FastifyInstance, deps: WebhookDeps) {
           return reply.code(200).send({ status: "success" });
         }
         const resp = await deps.buildTextResponse(content, nonce);
-        req.log.info({ botId: msg.botId, eventType: msg.eventType, contentLen: content.length }, "event-reply");
+        req.log.info({ userId: msg.userId, botId: msg.botId, eventType: msg.eventType, contentLen: content.length }, "event-reply");
         return reply.code(200).header("content-type", "application/json").send(resp);
       }
 
       // 用户消息:handleUserMessage 同步初始化 stream 状态 + 异步启动执行,
       // 返回 streamId 作首响应(5s 内必须返回)。同步初始化保证刷新回调能拿到状态。
       const streamId = await deps.handleUserMessage(msg).catch((e) => {
-        req.log.error({ err: e }, "handleUserMessage 异常");
+        req.log.error({ err: e, userId: msg.userId }, "handleUserMessage 异常");
         return null;
       });
       if (!streamId) {
         return reply.code(200).send({ status: "success" });
       }
-      req.log.info({ streamId: String(streamId).slice(0, 12), text: msg.text?.slice(0, 200) }, "user-msg-stream");
+      req.log.info({ userId: msg.userId, streamId: String(streamId).slice(0, 12), text: msg.text?.slice(0, 200) }, "user-msg-stream");
       // 首响应:返回非空占位内容(finish=false),让企微端立即进入流式展示,避免长时间转圈超时。
       const resp = await deps.buildStreamResponse(streamId, FIRST_REPLY_PLACEHOLDER, false, nonce);
       return reply.code(200).header("content-type", "application/json").send(resp);
     } catch (e) {
-      req.log.error({ err: e }, "webhook 响应构造异常");
+      req.log.error({ err: e, userId: msg.userId }, "webhook 响应构造异常");
       return reply.code(200).send({ status: "success" });
     }
   });

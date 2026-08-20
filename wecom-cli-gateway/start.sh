@@ -97,12 +97,13 @@ if port_open 127.0.0.1 "$GATEWAY_PORT"; then
   echo "[4/4] Port $GATEWAY_PORT already in use, skip (assume running)"
 else
   echo "[4/4] Starting gateway (:$GATEWAY_PORT) ..."
-  (cd "$GATEWAY_DIR" && nohup npx tsx src/index.ts >"$LOG_DIR/gateway.log" 2>&1 &)
-  echo "      -> log: $LOG_DIR/gateway.log"
+  # 网关进程内已按天滚动日志(logs/gateway-YYYY-MM-DD.log),无需 shell 重定向到单文件。
+  (cd "$GATEWAY_DIR" && nohup npx tsx src/index.ts >/dev/null 2>&1 &)
+  echo "      -> log: $LOG_DIR/gateway-<date>.log"
 fi
 
 echo ""
 echo "Done. View logs:"
 echo "  claudecodeui: tail -f $LOG_DIR/ccui.log"
-echo "  gateway     : tail -f $LOG_DIR/gateway.log"
+echo "  gateway     : tail -f $LOG_DIR/gateway-\$(date +%F).log"
 echo "Stop: ./stop.sh"
