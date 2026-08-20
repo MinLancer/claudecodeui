@@ -1,6 +1,6 @@
 import type { NormalizedMessage } from "../im/types.js";
 import type { SessionStore } from "../store/redis.js";
-import type { CliAdapter, StreamChunk } from "../cli/types.js";
+import type { CliAdapter, CliSession, StreamChunk } from "../cli/types.js";
 import type { CliType } from "../cli/types.js";
 import { FIRST_REPLY_PLACEHOLDER } from "../server/webhook.js";
 
@@ -31,6 +31,9 @@ export interface RouterDeps {
   reassureSec?: number;
   // 清空上下文命令词:命中则删除该用户所有 cliType 的会话(下次开新会话)。默认 ["/clear", "清空上下文"]。
   clearCommands?: string[];
+  // 停止执行命令词:命中则终止该用户所有 cliType 下正在执行的会话,并返回停止提示。
+  // 默认 ["/stop", "停止", "停止执行"]。
+  stopCommands?: string[];
   // 清空命令回复中,先推内容(finish=false)到标记完成(finish=true)之间的延时(ms)。
   // 企微被动流式需先看到"有内容未完成"的中间帧进入流式展示,才能接受 finish=true;
   // 默认 6000 给企微一次刷新机会。测试传小值。
@@ -56,6 +59,10 @@ function todayStr(): string {
 }
 
 export class SessionRouter {
+  // 运行中会话注册表:key -> { session, stopped }。供 /stop 终止正在执行的会话。
+  // stopped 标记该会话被外部(/stop)终止,原 handle() 据此跳过正常完成流程。
+  private running = new Map<string, { session: CliSession; stopped: boolean }>();
+
   constructor(private deps: RouterDeps) {}
 
   // 流式:把最新累积内容写 Redis(覆盖式),供 webhook 刷新回调拉取。
@@ -138,7 +145,30 @@ export class SessionRouter {
       // 4. Key
       const key = `${msg.botId}:${msg.chatSceneId}:${msg.userId}:${cliType}`;
 
-      // 5. 锁
+      // 5. 停止执行命令:终止该用户所有 cliType 下正在执行的会话,并返回停止提示。
+      //    必须在拿到锁之前处理——正在执行的会话正持有锁,否则会先命中"上一条还在处理中"。
+      //    与 /clear 一致:遍历全部 cliType 的注册表,找到即 kill() 并标记 stopped。
+      const STOP_DEFAULT = ["/stop", "停止", "停止执行"];
+      const stopCmds = this.deps.stopCommands ?? STOP_DEFAULT;
+      if (stopCmds.includes(text.trim())) {
+        for (const t of ALL_CLI_TYPES) {
+          const entry = this.running.get(`${msg.botId}:${msg.chatSceneId}:${msg.userId}:${t}`);
+          if (entry) {
+            entry.stopped = true;
+            entry.session.kill();
+            console.log(`[${ts()}] [router] /stop 已终止执行 user=${msg.userId} cli=${t}`);
+          }
+        }
+        const stopMsg = "我已停止执行，如果要恢复，请说 继续";
+        // 与清空命令一致:先推内容(finish=false)让企微进入流式展示,再延时后标记完成(finish=true)。
+        const clearDelayMs = this.deps.clearDelayMs ?? 6000;
+        await this.pushStream(streamId, stopMsg, false, msg.userId);
+        await new Promise((r) => setTimeout(r, clearDelayMs));
+        await this.pushStream(streamId, stopMsg, true, msg.userId);
+        return;
+      }
+
+      // 6. 锁
       if (!(await this.deps.store.tryAcquireLock(key))) {
         await this.pushStream(streamId, "⏳ 上一条还在处理中,稍后再试", true, msg.userId);
         return;
@@ -173,7 +203,7 @@ export class SessionRouter {
           return;
         }
 
-        // 6. 取已有 session
+        // 7. 取已有 session
         const existing = await this.deps.store.getSession(key);
 
         let session;
@@ -183,8 +213,10 @@ export class SessionRouter {
           await this.pushStream(streamId, "⚠️ claude 启动失败,请联系管理员", true, msg.userId);
           return;
         }
+        // 注册运行中会话,供 /stop 终止执行;执行结束在 finally 注销。
+        this.running.set(key, { session, stopped: false });
 
-        // 7. 执行 + 超时:实时把 final chunk 累积写 Redis(流式)
+        // 8. 执行 + 超时:实时把 final chunk 累积写 Redis(流式)
         const finalChunks: string[] = [FIRST_REPLY_PLACEHOLDER + "\n\n"];
         const exec = (async () => {
           for await (const c of session.send(text)) {
@@ -234,12 +266,21 @@ export class SessionRouter {
           return;
         }
 
-        // 8. 回写 session
+        // 9. 被 /stop 终止:不当作正常完成,原消息显示停止提示并标记完成,避免企微持续刷新;
+        //    同时不回写 session(被中断的会话不应作为下一次的恢复点)。
+        const runningEntry = this.running.get(key);
+        if (runningEntry?.stopped) {
+          const stoppedMsg = "已停止执行";
+          await this.pushStream(streamId, stoppedMsg, true, msg.userId);
+          return;
+        }
+
+        // 10. 回写 session
         if (session.sessionId && session.sessionId !== existing?.sessionId) {
           await this.deps.store.setSession(key, session.sessionId);
         }
 
-        // 9. 流式结束:finish=true(最终内容已在循环里推送过,这里标记完成)
+        // 11. 流式结束:finish=true(最终内容已在循环里推送过,这里标记完成)
         // 不 trim:trim 可能移除尾部空白,导致最终帧不包含前一帧内容,违反企微累积规则
         const reply = finalChunks.join("");
         // 一次性输出时内容出现与完成几乎同时,企微刷不到 finish=false 内容帧而不认完成;
@@ -252,6 +293,7 @@ export class SessionRouter {
         // 主动推送保证最终结果可靠送达。
         await this.activePush(msg, reply);
       } finally {
+        this.running.delete(key);
         await this.deps.store.releaseLock(key);
       }
     } catch {

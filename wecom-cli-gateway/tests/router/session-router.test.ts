@@ -352,6 +352,92 @@ describe("SessionRouter", () => {
     expect(store.deletedKeys.length).toBe(0);
   });
 
+  it("/stop:终止正在执行的会话,回固定提示;原消息显示已停止", async () => {
+    const store = fakeStore();
+    let releaseSend: (() => void) | undefined;
+    let killed = false;
+    const router = new SessionRouter({
+      store, getAdapter: () => ({
+        async start() {
+          return { sessionId: "s", async *send(){ await new Promise<void>(r => { releaseSend = r; }); yield {type:"final",text:"xxx"}; }, kill(){ killed = true; } };
+        },
+      }) as any,
+      defaultCli: "claude", projectDir: "/tmp/proj", timeoutSec: 600, isAllowed: () => true, finishDelayMs: 5,
+      clearDelayMs: 5,
+    });
+    // 启动一条正在执行的消息(不完成)
+    const running = router.handle(mkMsg({ text: "帮我分析" }), "stream-run");
+    await new Promise((r) => setTimeout(r, 10)); // 让 session 注册并进入 send pending
+    // 用户发送 /stop
+    await router.handle(mkMsg({ text: "/stop", msgId: "stop1" }), "stream-stop");
+    // /stop 应 kill 正在执行的会话
+    expect(killed).toBe(true);
+    // /stop 消息流式显示停止提示(最后 finish=true)
+    const stopFrames = store.streamChunks.filter((c) => c.content.includes("我已停止执行"));
+    expect(stopFrames.length).toBeGreaterThanOrEqual(2);
+    expect(stopFrames[0].finish).toBe(false);
+    expect(stopFrames[stopFrames.length - 1].finish).toBe(true);
+    // 释放原会话,让其收尾
+    releaseSend?.();
+    await running;
+    // 原消息显示"已停止执行"并标记完成,不回写 session
+    const origFrames = store.streamChunks.filter((c) => c.streamId === "stream-run" && c.content.includes("已停止执行"));
+    expect(origFrames.length).toBeGreaterThanOrEqual(1);
+    expect(origFrames[origFrames.length - 1].finish).toBe(true);
+    expect(store.sessions.size).toBe(0);
+  });
+
+  it("/stop:中文命令'停止''停止执行'同样触发终止", async () => {
+    for (const cmd of ["停止", "停止执行"]) {
+      const store = fakeStore();
+      let killed = false;
+      const router = new SessionRouter({
+        store, getAdapter: () => ({
+          async start() {
+            return { sessionId: "s", async *send(){ await new Promise(() => {}); }, kill(){ killed = true; } };
+          },
+        }) as any,
+        defaultCli: "claude", projectDir: "/tmp/proj", timeoutSec: 600, isAllowed: () => true, finishDelayMs: 5,
+        clearDelayMs: 5,
+      });
+      const running = router.handle(mkMsg({ text: "帮我分析", msgId: "run-" + cmd }), "stream-run");
+      await new Promise((r) => setTimeout(r, 10));
+      await router.handle(mkMsg({ text: cmd, msgId: "stop-" + cmd }), "stream-stop");
+      expect(killed).toBe(true);
+      const stopFrames = store.streamChunks.filter((c) => c.content.includes("我已停止执行"));
+      expect(stopFrames[stopFrames.length - 1].finish).toBe(true);
+      (running as any).catch(() => {});
+    }
+  });
+
+  it("/stop:无正在执行会话时仍回复固定提示,不启动 CLI", async () => {
+    const store = fakeStore();
+    const started = vi.fn();
+    const router = new SessionRouter({
+      store, getAdapter: () => ({ async start(){ started(); return { sessionId:"s", async *send(){}, kill(){} }; } }) as any,
+      defaultCli: "claude", projectDir: "/tmp/proj", timeoutSec: 600, isAllowed: () => true, finishDelayMs: 5,
+      clearDelayMs: 5,
+    });
+    await router.handle(mkMsg({ text: "/stop" }), "s");
+    expect(started).not.toHaveBeenCalled();
+    expect(store.sessions.size).toBe(0);
+    const stopFrames = store.streamChunks.filter((c) => c.content.includes("我已停止执行"));
+    expect(stopFrames.length).toBeGreaterThanOrEqual(2);
+    expect(stopFrames[stopFrames.length - 1].finish).toBe(true);
+  });
+
+  it("普通消息不触发 /stop(仍启动 CLI)", async () => {
+    const store = fakeStore();
+    const started = vi.fn();
+    const router = new SessionRouter({
+      store, getAdapter: () => ({ async start(){ started(); return { sessionId:"s", async *send(){ yield {type:"final",text:"ok"}; }, kill(){} }; } }) as any,
+      defaultCli: "claude", projectDir: "/tmp/proj", timeoutSec: 600, isAllowed: () => true, finishDelayMs: 5,
+    });
+    await router.handle(mkMsg({ text: "你好" }), "s");
+    expect(started).toHaveBeenCalled();
+    expect(store.streamChunks[store.streamChunks.length - 1].content).toContain("ok");
+  });
+
   it("一次性输出:完成前延时(finishDelayMs),内容帧先于完成帧", async () => {
     // 一次性输出(claude 立即给完整回复)时,若无延时,内容帧与 finish=true 几乎同时发生,
     // 企微刷不到内容帧而不认完成。故完成前应等待 finishDelayMs(finish=true 延后)。
