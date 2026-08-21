@@ -141,7 +141,9 @@ export class WeComAdapter implements IMAdapter {
     const encrypt = this.crypto.encrypt(JSON.stringify(inner));
     const timestamp = Math.floor(Date.now() / 1000).toString();
     const msgsignature = this.crypto.sign(timestamp, requestNonce, encrypt);
-    return JSON.stringify({ encrypt, msgsignature, timestamp, nonce: requestNonce });
+    const raw = JSON.stringify({ encrypt, msgsignature, timestamp, nonce: requestNonce });
+    console.log("[wecom] TEXT wire nonce="+requestNonce+" stamp="+timestamp+" sign="+msgsignature+" encLen="+encrypt.length+" body="+raw);
+    return raw;
   }
 
   /**
