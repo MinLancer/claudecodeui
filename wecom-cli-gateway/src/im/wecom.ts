@@ -132,6 +132,8 @@ export class WeComAdapter implements IMAdapter {
   /**
    * 构造被动文本回复的加密响应体(仅进入会话事件支持文本被动回复)。
    * 内部结构:{msgtype:"text", text:{content}},外包标准加密签名,nonce 复用回调请求的 nonce。
+   * timestamp 按文档 101033 示例输出数字(非字符串)——enter_chat 欢迎语一直不展示,
+   * 唯一与文档字面不符处即 timestamp 字符串类型,故此路径改用数字(流式路径不动)。
    */
   async buildTextResponse(content: string, requestNonce: string): Promise<string> {
     const inner = {
@@ -139,8 +141,8 @@ export class WeComAdapter implements IMAdapter {
       text: { content },
     };
     const encrypt = this.crypto.encrypt(JSON.stringify(inner));
-    const timestamp = Math.floor(Date.now() / 1000).toString();
-    const msgsignature = this.crypto.sign(timestamp, requestNonce, encrypt);
+    const timestamp = Math.floor(Date.now() / 1000);
+    const msgsignature = this.crypto.sign(String(timestamp), requestNonce, encrypt);
     const raw = JSON.stringify({ encrypt, msgsignature, timestamp, nonce: requestNonce });
     console.log("[wecom] TEXT wire nonce="+requestNonce+" stamp="+timestamp+" sign="+msgsignature+" encLen="+encrypt.length+" body="+raw);
     return raw;

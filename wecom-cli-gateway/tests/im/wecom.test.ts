@@ -209,10 +209,13 @@ describe("WeComAdapter", () => {
     expect(obj.encrypt).toBeTruthy();
     expect(obj.nonce).toBe("nonce-abc"); // 复用请求 nonce
 
+    // timestamp 须为数字(文档 101033 示例格式;字符串疑导致企微事件路径拒绝展示欢迎语)
+    expect(typeof obj.timestamp).toBe("number");
+
     const crypto = new WeComCrypto({ aesKey, token });
     const inner = JSON.parse(crypto.decrypt(obj.encrypt));
     expect(inner.msgtype).toBe("text");
     expect(inner.text.content).toBe("欢迎使用");
-    expect(crypto.verifySign(obj.timestamp, obj.nonce, obj.encrypt, obj.msgsignature)).toBe(true);
+    expect(crypto.verifySign(String(obj.timestamp), obj.nonce, obj.encrypt, obj.msgsignature)).toBe(true);
   });
 });
